@@ -26,15 +26,9 @@ export class WhatsappController {
 
       if (message.type === 'text') {
         const userText = message.text.body;
-        const response = this.whatsappService.generarRespuesta(userText);
+        const response = await this.whatsappService.generarRespuesta(userText); 
         await this.whatsappService.sendMessage(from, response);
       } else if (message.type === 'audio') {
-        // Nota: La URL del audio en el webhook es un ID.
-        // Necesitarás hacer una solicitud GET a la API de Meta para obtener la URL real del archivo.
-        // Para fines de este ejemplo, asumiremos que la URL del audio está directamente en el payload
-        // En una aplicación real, usarías message.audio.id y harías una solicitud a
-        // https://graph.facebook.com/v19.0/${audioId}/
-
         const audioUrl = changes.value.media_url; 
         const response = await this.whatsappService.manejarAudio(audioUrl);
         await this.whatsappService.sendMessage(from, response);
