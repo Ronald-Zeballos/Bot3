@@ -4,7 +4,7 @@ import { AssemblyaiService } from '../assemblyai/assemblyai.service';
 
 @Injectable()
 export class WhatsappService {
-  private readonly API_URL = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  private readonly API_URL = `https://graph.facebook.com/v22.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   private readonly HEADERS = {
     'Authorization': `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`,
     'Content-Type': 'application/json',
