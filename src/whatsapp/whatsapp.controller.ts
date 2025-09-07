@@ -29,9 +29,16 @@ export class WhatsappController {
         const response = await this.whatsappService.generarRespuesta(userText); 
         await this.whatsappService.sendMessage(from, response);
       } else if (message.type === 'audio') {
-        const audioUrl = changes.value.media_url; 
-        const response = await this.whatsappService.manejarAudio(audioUrl);
-        await this.whatsappService.sendMessage(from, response);
+        // CORRECCIÓN: Obtén el ID del audio del payload.
+        const audioId = message.audio?.id;
+        
+        if (audioId) {
+          const response = await this.whatsappService.manejarAudio(audioId);
+          await this.whatsappService.sendMessage(from, response);
+        } else {
+          console.error('ID de audio no encontrado en el payload.');
+          await this.whatsappService.sendMessage(from, "Lo siento, no pude procesar tu mensaje de audio. ¿Podrías escribir tu consulta, por favor?");
+        }
       }
     }
   }

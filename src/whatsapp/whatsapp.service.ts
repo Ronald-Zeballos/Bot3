@@ -73,13 +73,31 @@ export class WhatsappService {
       return "Lo siento, tengo problemas para entenderte en este momento. Por favor, intenta de nuevo.";
     }
   }
-
-  async manejarAudio(audioUrl: string): Promise<string> {
+  
+  async getAudioUrl(audioId: string): Promise<string> {
+    const url = `https://graph.facebook.com/v22.0/${audioId}`;
+    const headers = {
+      'Authorization': `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`,
+    };
     try {
+      const response = await axios.get(url, { headers });
+      return response.data.url;
+    } catch (error) {
+      console.error('Error al obtener la URL del audio de Meta:', error.response ? error.response.data : error.message);
+      throw new Error('No se pudo obtener la URL del audio.');
+    }
+  }
+
+  async manejarAudio(audioId: string): Promise<string> {
+    try {
+      // 1. Obtener la URL real del audio de la API de Meta
+      const audioUrl = await this.getAudioUrl(audioId);
       console.log(`URL de audio a transcribir: ${audioUrl}`);
+
+      // 2. Transcribir el audio con AssemblyAI
       const transcribedText = await this.assemblyaiService.transcribeAudio(audioUrl);
       
-      // Pasar el texto transcrito a la lógica de respuesta mixta
+      // 3. Pasar el texto transcrito a la lógica de respuesta mixta
       return await this.generarRespuesta(transcribedText);
 
     } catch (error) {
