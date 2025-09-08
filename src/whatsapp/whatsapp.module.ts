@@ -1,10 +1,9 @@
 import { Module } from '@nestjs/common';
 import { WhatsappController } from './whatsapp.controller';
 import { WhatsappService } from './whatsapp.service';
-import { AssemblyaiModule } from '../assemblyai/assemblyai.module';
 
 @Module({
-  imports: [AssemblyaiModule],
+  imports: [], // No se necesita importar nada si no usas otros servicios
   controllers: [WhatsappController],
   providers: [WhatsappService],
 })
