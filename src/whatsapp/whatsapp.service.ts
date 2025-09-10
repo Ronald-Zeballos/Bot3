@@ -88,11 +88,17 @@ export class WhatsappService {
       return await this.handleProductSelection(text, from);
     } else if (userState.state === 'awaiting_payment') {
       return this.handlePaymentConfirmation(text, from);
+    } else if (userState.state === 'awaiting_coffee_info') {
+      // Si el usuario está en modo información, usar IA para responder
+      const response = await this.generateGeminiResponse(text);
+      this.userStates.set(from, { state: 'initial' }); // Volver al estado inicial
+      return response;
     }
 
     // Lógica principal con if/else
     if (this.detectarTrigger(textLowerCase, this.TRIGGERS_BIENVENIDA)) {
-      return "¡Hola! 👋 Bienvenido a nuestra tienda de café. ¿Te gustaría conocer nuestros productos?";
+      await this.sendWelcomeButtons(from);
+      return "";
     } else if (this.detectarTrigger(textLowerCase, this.TRIGGERS_PRODUCTOS)) {
       await this.sendProductButtons(from);
       this.userStates.set(from, { state: 'awaiting_product_selection' });
@@ -108,18 +114,31 @@ export class WhatsappService {
     } else if (textLowerCase.includes('adiós') || textLowerCase.includes('chao') || textLowerCase.includes('hasta luego')) {
       return "¡Hasta luego! Espero verte pronto para disfrutar de nuestro café.";
     } else {
-      // Solo usar IA para preguntas específicas sobre café, no para desviar la conversación
-      if (this.esPreguntaSobreCafe(textLowerCase)) {
-        return await this.generateGeminiResponse(text);
-      } else {
-        return "No estoy seguro de cómo responder a eso. ¿Te interesa conocer nuestros productos de café? Tenemos Samaipata, Catavi y Americano.";
-      }
+      return "No estoy seguro de cómo responder a eso. ¿Te interesa conocer nuestros productos de café? Tenemos Samaipata, Catavi y Americano.";
     }
   }
 
-  private esPreguntaSobreCafe(text: string): boolean {
-    const palabrasCafe = ['café', 'cafe', 'tueste', 'grano', 'arábica', 'robusta', 'preparación', 'molido'];
-    return palabrasCafe.some(palabra => text.includes(palabra));
+  private async sendWelcomeButtons(to: string) {
+    const buttons = [
+      {
+        type: "reply",
+        reply: {
+          id: "ver_productos",
+          title: "Ver productos"
+        }
+      },
+      {
+        type: "reply",
+        reply: {
+          id: "info_cafe",
+          title: "Saber sobre café"
+        }
+      }
+    ];
+
+    const message = "¡Hola! 👋 Bienvenido a nuestra tienda de café. ¿En qué puedo ayudarte hoy?";
+
+    await this.sendButtons(to, message, buttons);
   }
 
   private async sendProductButtons(to: string) {
@@ -131,6 +150,15 @@ export class WhatsappService {
       }
     }));
 
+    // Añadir botón para volver
+    buttons.push({
+      type: "reply",
+      reply: {
+        id: "volver",
+        title: "Volver al inicio"
+      }
+    });
+
     const message = "¡Excelente! Tenemos estas opciones disponibles:\n\n" +
       this.productos.map(p => `*${p.nombre}* - $${p.precio}\n${p.descripcion}`).join('\n\n') +
       "\n\nPor favor, selecciona una opción:";
@@ -139,6 +167,13 @@ export class WhatsappService {
   }
 
   private async handleProductSelection(text: string, from: string): Promise<string> {
+    // Verificar si el usuario quiere volver al inicio
+    if (text.toLowerCase().includes('volver')) {
+      await this.sendWelcomeButtons(from);
+      this.userStates.set(from, { state: 'initial' });
+      return "";
+    }
+
     // Verificar si el texto coincide con algún producto o su ID
     let selectedProduct = null;
     for (const producto of this.productos) {
@@ -154,12 +189,9 @@ export class WhatsappService {
         selectedProduct 
       });
 
-      // Generar QR code (en base64)
-      const qrData = await this.generateQRCode(selectedProduct.precio, from);
+      // Generar QR code usando un servicio externo (más confiable)
+      const qrImageUrl = await this.generateQRCode(selectedProduct.precio, from);
       
-      // Enviar imagen con QR (usamos un servidor temporal para la imagen base64)
-      const qrImageUrl = await this.uploadQRImage(qrData);
-
       await this.sendImage(
         from, 
         qrImageUrl, 
@@ -167,6 +199,10 @@ export class WhatsappService {
       );
 
       return "¡Perfecto! He enviado un QR code para que completes tu pago. ¿Necesitas algo más?";
+    } else if (text.toLowerCase().includes('saber sobre café') || text.includes('info_cafe')) {
+      // Cambiar a modo información sobre café
+      this.userStates.set(from, { state: 'awaiting_coffee_info' });
+      return "Claro, estaré encantado de responder tus preguntas sobre café. ¿Qué te gustaría saber?";
     } else {
       await this.sendProductButtons(from);
       return "No reconocí esa opción. Por favor selecciona uno de nuestros productos:";
@@ -174,30 +210,20 @@ export class WhatsappService {
   }
 
   private async generateQRCode(monto: number, referencia: string): Promise<string> {
-    // Datos para el QR
+    // Usar un servicio de generación de QR en línea
     const paymentData = {
-      merchant: "Tu Cafetería",
+      merchant: "Cafetería Premium",
       account: "1234567890",
       amount: monto,
-      currency: "BOB",
-      reference: referencia
+      currency: "USD",
+      reference: `pedido_${referencia}_${Date.now()}`
     };
 
-    const qrString = JSON.stringify(paymentData);
+    // Codificar los datos para la URL
+    const qrData = encodeURIComponent(JSON.stringify(paymentData));
     
-    try {
-      // Generar QR como Data URL
-      return await QRCode.toDataURL(qrString);
-    } catch (err) {
-      console.error('Error generando QR:', err);
-      throw new Error('No se pudo generar el QR');
-    }
-  }
-
-  private async uploadQRImage(dataUrl: string): Promise<string> {
-    // En un entorno real, subirías la imagen a un servidor o usarías un servicio de almacenamiento
-    console.log('Simulando subida de imagen QR...');
-    return 'https://example.com/qr.png'; // URL simulada
+    // Usar un servicio de generación de QR gratuito
+    return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${qrData}`;
   }
 
   private handlePaymentConfirmation(text: string, from: string): string {
@@ -208,6 +234,14 @@ export class WhatsappService {
 
   // Método para obtener el texto del botón por ID
   getButtonTextById(buttonId: string): string {
+    if (buttonId === 'ver_productos') {
+      return 'Ver productos';
+    } else if (buttonId === 'info_cafe') {
+      return 'Saber sobre café';
+    } else if (buttonId === 'volver') {
+      return 'Volver';
+    }
+    
     const match = buttonId.match(/product_(\d+)/);
     if (match) {
       const productId = parseInt(match[1]);
