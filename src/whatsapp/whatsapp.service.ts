@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
-import { AssemblyaiService } from '../assemblyai/assemblyai.service';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as QRCode from 'qrcode';
 
@@ -13,7 +12,7 @@ export class WhatsappService {
   };
   private readonly TRIGGERS_BIENVENIDA = new RegExp(`^(${process.env.TRIGGERS_BIENVENIDA})$`, 'i');
   
-  // Almacenamiento simple de estados de usuario (en producción usarías una base de datos)
+  // Almacenamiento simple de estados de usuario
   private userStates = new Map<string, { state: string, selectedProduct?: any }>();
   
   // Catálogo de productos
@@ -26,7 +25,7 @@ export class WhatsappService {
   private readonly geminiGenAI: GoogleGenerativeAI;
   private readonly geminiModel;
 
-  constructor(private readonly assemblyaiService: AssemblyaiService) {
+  constructor() {
     this.geminiGenAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     this.geminiModel = this.geminiGenAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
   }
@@ -81,7 +80,7 @@ export class WhatsappService {
 
     // Lógica de estados
     if (userState.state === 'awaiting_product_selection') {
-      return this.handleProductSelection(text, from);
+      return await this.handleProductSelection(text, from);
     } else if (userState.state === 'awaiting_payment') {
       return this.handlePaymentConfirmation(text, from);
     }
@@ -104,7 +103,7 @@ export class WhatsappService {
   }
 
   private async sendProductButtons(to: string) {
-    const buttons = this.productos.map((producto, index) => ({
+    const buttons = this.productos.map((producto) => ({
       type: "reply",
       reply: {
         id: `product_${producto.id}`,
@@ -119,11 +118,17 @@ export class WhatsappService {
     await this.sendButtons(to, message, buttons);
   }
 
+
+
   private async handleProductSelection(text: string, from: string): Promise<string> {
-    const selectedProduct = this.productos.find(p => 
-      text.toLowerCase().includes(p.nombre.toLowerCase()) || 
-      text.includes(p.id.toString())
-    );
+    // Verificar si el texto coincide con algún producto o su ID
+    let selectedProduct = null;
+    for (const producto of this.productos) {
+      if (text.toLowerCase().includes(producto.nombre.toLowerCase()) || text.includes(producto.id.toString())) {
+        selectedProduct = producto;
+        break;
+      }
+    }
 
     if (selectedProduct) {
       this.userStates.set(from, { 
@@ -131,13 +136,15 @@ export class WhatsappService {
         selectedProduct 
       });
 
-      // Generar QR code
+      // Generar QR code (en base64)
       const qrData = await this.generateQRCode(selectedProduct.precio, from);
       
-      // Enviar imagen con QR
+      // Enviar imagen con QR (usamos un servidor temporal para la imagen base64)
+      const qrImageUrl = await this.uploadQRImage(qrData);
+
       await this.sendImage(
         from, 
-        qrData, 
+        qrImageUrl, 
         `✅ *${selectedProduct.nombre} seleccionado*\n\nPrecio: $${selectedProduct.precio}\n\nEscanea el QR code para completar tu pago.`
       );
 
@@ -149,7 +156,7 @@ export class WhatsappService {
   }
 
   private async generateQRCode(monto: number, referencia: string): Promise<string> {
-    // Datos para el QR (aquí personaliza con tu información de pago)
+    // Datos para el QR
     const paymentData = {
       merchant: "Tu Cafetería",
       account: "1234567890",
@@ -165,9 +172,16 @@ export class WhatsappService {
       return await QRCode.toDataURL(qrString);
     } catch (err) {
       console.error('Error generando QR:', err);
-      // Fallback a una imagen estática o mensaje de error
-      return 'https://ejemplo.com/qr-fallback.png';
+      throw new Error('No se pudo generar el QR');
     }
+  }
+
+  private async uploadQRImage(dataUrl: string): Promise<string> {
+    // En un entorno real, subirías la imagen a un servidor o usarías un servicio de almacenamiento
+    // Por simplicidad, aquí simulamos que ya tenemos una URL
+    // En producción, usa un servicio como Cloudinary, AWS S3, o similar
+    console.log('Simulando subida de imagen QR...');
+    return 'https://example.com/qr.png'; // URL simulada
   }
 
   private handlePaymentConfirmation(text: string, from: string): string {
@@ -176,9 +190,16 @@ export class WhatsappService {
     return "¡Gracias por tu compra! Tu pedido está siendo procesado. Te avisaremos cuando esté listo.";
   }
 
-  // ... (el resto de tus métodos existentes como generateGeminiResponse, getAudioUrl, manejarAudio)
-
-
+// Método para obtener el texto del botón por ID
+  getButtonTextById(buttonId: string): string {
+    const match = buttonId.match(/product_(\d+)/);
+    if (match) {
+      const productId = parseInt(match[1]);
+      const product = this.productos.find(p => p.id === productId);
+      return product ? product.nombre : buttonId;
+    }
+    return buttonId;
+  }
   private async generateGeminiResponse(userText: string): Promise<string> {
     try {
       const prompt = `Eres un chatbot que vende café de especialidad.
@@ -191,7 +212,7 @@ export class WhatsappService {
       const response = result.response;
       let responseText = response.text();
 
-      // Limpiar la respuesta de la IA (opcional)
+      // Limpiar la respuesta de la IA
       responseText = responseText.replace(/\*/g, '');
 
       return responseText;
@@ -200,20 +221,4 @@ export class WhatsappService {
       return "Lo siento, tengo problemas para entenderte en este momento. Por favor, intenta de nuevo.";
     }
   }
-  
-  async getAudioUrl(audioId: string): Promise<string> {
-    const url = `https://graph.facebook.com/v22.0/${audioId}`;
-    const headers = {
-      'Authorization': `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`,
-    };
-    try {
-      const response = await axios.get(url, { headers });
-      return response.data.url;
-    } catch (error) {
-      console.error('Error al obtener la URL del audio de Meta:', error.response ? error.response.data : error.message);
-      throw new Error('No se pudo obtener la URL del audio.');
-    }
-  }
-
-
 }

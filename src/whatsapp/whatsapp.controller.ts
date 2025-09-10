@@ -26,7 +26,7 @@ export class WhatsappController {
 
       if (message.type === 'text') {
         const userText = message.text.body;
-        const response = await this.whatsappService.generarRespuesta(userText, from); // Añadido el segundo parámetro
+        const response = await this.whatsappService.generarRespuesta(userText, from);
         
         if (response) {
           await this.whatsappService.sendMessage(from, response);
@@ -39,14 +39,13 @@ export class WhatsappController {
         if (interactiveType === 'button_reply') {
           const buttonId = message.interactive.button_reply.id;
           const buttonText = this.whatsappService.getButtonTextById(buttonId);
-          const response = await this.whatsappService.generarRespuesta(buttonText, from); // Añadido el segundo parámetro
+          const response = await this.whatsappService.generarRespuesta(buttonText, from);
           
           if (response) {
             await this.whatsappService.sendMessage(from, response);
           }
         }
       }
-      // Eliminado completamente el bloque de manejo de audio
     }
   }
 }
