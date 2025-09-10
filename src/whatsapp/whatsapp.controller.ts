@@ -26,20 +26,27 @@ export class WhatsappController {
 
       if (message.type === 'text') {
         const userText = message.text.body;
-        const response = await this.whatsappService.generarRespuesta(userText); 
-        await this.whatsappService.sendMessage(from, response);
-      } else if (message.type === 'audio') {
-        // CORRECCIÓN: Obtén el ID del audio del payload.
-        const audioId = message.audio?.id;
+        const response = await this.whatsappService.generarRespuesta(userText, from); // Añadido el segundo parámetro
         
-        if (audioId) {
-          const response = await this.whatsappService.manejarAudio(audioId);
+        if (response) {
           await this.whatsappService.sendMessage(from, response);
-        } else {
-          console.error('ID de audio no encontrado en el payload.');
-          await this.whatsappService.sendMessage(from, "Lo siento, no pude procesar tu mensaje de audio. ¿Podrías escribir tu consulta, por favor?");
         }
       }
+      // Manejar respuestas de botones
+      else if (message.type === 'interactive') {
+        const interactiveType = message.interactive?.type;
+        
+        if (interactiveType === 'button_reply') {
+          const buttonId = message.interactive.button_reply.id;
+          const buttonText = this.whatsappService.getButtonTextById(buttonId);
+          const response = await this.whatsappService.generarRespuesta(buttonText, from); // Añadido el segundo parámetro
+          
+          if (response) {
+            await this.whatsappService.sendMessage(from, response);
+          }
+        }
+      }
+      // Eliminado completamente el bloque de manejo de audio
     }
   }
 }
