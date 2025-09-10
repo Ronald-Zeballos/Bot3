@@ -10,7 +10,12 @@ export class WhatsappService {
     'Authorization': `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`,
     'Content-Type': 'application/json',
   };
-  private readonly TRIGGERS_BIENVENIDA = new RegExp(`^(${process.env.TRIGGERS_BIENVENIDA})$`, 'i');
+  
+  // Triggers para iniciar conversación
+  private readonly TRIGGERS_BIENVENIDA = new RegExp(/(hola|buenas|hello|hi|buenos días|buenas tardes|buenas noches)/, 'i');
+  
+  // Triggers para consulta de productos
+  private readonly TRIGGERS_PRODUCTOS = new RegExp(/(producto|comprar|precio|que tienen|qué tienen|oferta|menu|menú|catalogo|catálogo)/, 'i');
   
   // Almacenamiento simple de estados de usuario
   private userStates = new Map<string, { state: string, selectedProduct?: any }>();
@@ -70,8 +75,8 @@ export class WhatsappService {
     await axios.post(this.API_URL, body, { headers: this.HEADERS });
   }
 
-  detectarTrigger(text: string): boolean {
-    return this.TRIGGERS_BIENVENIDA.test(text.toLowerCase().trim());
+  detectarTrigger(text: string, regex: RegExp): boolean {
+    return regex.test(text.toLowerCase().trim());
   }
 
   async generarRespuesta(text: string, from: string): Promise<string> {
@@ -85,21 +90,36 @@ export class WhatsappService {
       return this.handlePaymentConfirmation(text, from);
     }
 
-    // Lógica de respuestas predefinidas (triggers)
-    if (this.detectarTrigger(textLowerCase)) {
+    // Lógica principal con if/else
+    if (this.detectarTrigger(textLowerCase, this.TRIGGERS_BIENVENIDA)) {
+      return "¡Hola! 👋 Bienvenido a nuestra tienda de café. ¿Te gustaría conocer nuestros productos?";
+    } else if (this.detectarTrigger(textLowerCase, this.TRIGGERS_PRODUCTOS)) {
       await this.sendProductButtons(from);
       this.userStates.set(from, { state: 'awaiting_product_selection' });
-      return ""; // Mensaje vacío porque ya enviamos los botones
+      return "";
     } else if (textLowerCase.includes('samaipata')) {
-      return "El café Samaipata es de tueste medio con notas a chocolate y cítricos. ¡Es uno de los favoritos!";
+      return "El café Samaipata es de tueste medio con notas a chocolate y cítricos. Precio: $45. ¿Te interesa comprarlo?";
     } else if (textLowerCase.includes('catavi')) {
-      return "El café Catavi se caracteriza por sus notas a frutos rojos y un tueste ligero, ideal para métodos de filtrado.";
+      return "El café Catavi se caracteriza por sus notas a frutos rojos y un tueste ligero. Precio: $52. ¿Te interesa comprarlo?";
     } else if (textLowerCase.includes('americano')) {
-      return "Nuestro café Americano es un blend de granos que ofrece un sabor clásico y balanceado.";
+      return "Nuestro café Americano es un blend de granos que ofrece un sabor clásico y balanceado. Precio: $38. ¿Te interesa comprarlo?";
+    } else if (textLowerCase.includes('gracias') || textLowerCase.includes('gracias')) {
+      return "¡Gracias a ti! ¿Hay algo más en lo que pueda ayudarte?";
+    } else if (textLowerCase.includes('adiós') || textLowerCase.includes('chao') || textLowerCase.includes('hasta luego')) {
+      return "¡Hasta luego! Espero verte pronto para disfrutar de nuestro café.";
     } else {
-      // Lógica de IA como fallback
-      return await this.generateGeminiResponse(text);
+      // Solo usar IA para preguntas específicas sobre café, no para desviar la conversación
+      if (this.esPreguntaSobreCafe(textLowerCase)) {
+        return await this.generateGeminiResponse(text);
+      } else {
+        return "No estoy seguro de cómo responder a eso. ¿Te interesa conocer nuestros productos de café? Tenemos Samaipata, Catavi y Americano.";
+      }
     }
+  }
+
+  private esPreguntaSobreCafe(text: string): boolean {
+    const palabrasCafe = ['café', 'cafe', 'tueste', 'grano', 'arábica', 'robusta', 'preparación', 'molido'];
+    return palabrasCafe.some(palabra => text.includes(palabra));
   }
 
   private async sendProductButtons(to: string) {
@@ -117,8 +137,6 @@ export class WhatsappService {
 
     await this.sendButtons(to, message, buttons);
   }
-
-
 
   private async handleProductSelection(text: string, from: string): Promise<string> {
     // Verificar si el texto coincide con algún producto o su ID
@@ -178,8 +196,6 @@ export class WhatsappService {
 
   private async uploadQRImage(dataUrl: string): Promise<string> {
     // En un entorno real, subirías la imagen a un servidor o usarías un servicio de almacenamiento
-    // Por simplicidad, aquí simulamos que ya tenemos una URL
-    // En producción, usa un servicio como Cloudinary, AWS S3, o similar
     console.log('Simulando subida de imagen QR...');
     return 'https://example.com/qr.png'; // URL simulada
   }
@@ -190,7 +206,7 @@ export class WhatsappService {
     return "¡Gracias por tu compra! Tu pedido está siendo procesado. Te avisaremos cuando esté listo.";
   }
 
-// Método para obtener el texto del botón por ID
+  // Método para obtener el texto del botón por ID
   getButtonTextById(buttonId: string): string {
     const match = buttonId.match(/product_(\d+)/);
     if (match) {
@@ -200,13 +216,14 @@ export class WhatsappService {
     }
     return buttonId;
   }
+
   private async generateGeminiResponse(userText: string): Promise<string> {
     try {
-      const prompt = `Eres un chatbot que vende café de especialidad.
-      Debes ser amigable y responder preguntas sobre café, granos (como Bourbon o Geisha), métodos de preparación, etc.
-      Si el usuario pregunta algo que no tiene que ver con café, redirígelo amablemente a la venta de café.
-      Ejemplo de redirección: "No tengo la hora, pero puedo ofrecerte un delicioso café Samaipata."
-      Usuario: ${userText}`;
+      const prompt = `Eres un experto en café que trabaja en una tienda. Responde únicamente preguntas específicas sobre café.
+      Mantén tus respuestas breves y centradas en la pregunta.
+      Si la pregunta no está relacionada con café, di amablemente: "Solo puedo responder preguntas sobre café. ¿Te interesa conocer nuestros productos?".
+      
+      Pregunta: ${userText}`;
 
       const result = await this.geminiModel.generateContent(prompt);
       const response = result.response;
@@ -218,7 +235,7 @@ export class WhatsappService {
       return responseText;
     } catch (error) {
       console.error('Error al generar respuesta con Gemini:', error);
-      return "Lo siento, tengo problemas para entenderte en este momento. Por favor, intenta de nuevo.";
+      return "Lo siento, tengo problemas para entenderte en este momento. ¿Te interesa conocer nuestros productos?";
     }
   }
 }
