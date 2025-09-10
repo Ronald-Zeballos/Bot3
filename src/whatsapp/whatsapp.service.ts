@@ -5,7 +5,7 @@ import * as QRCode from 'qrcode';
 
 @Injectable()
 export class WhatsappService {
-  private readonly API_URL = `https://graph.facebook.com/v22.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  private readonly API_URL = `https://graph.facebook.com/v23.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   private readonly HEADERS = {
     'Authorization': `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`,
     'Content-Type': 'application/json',
@@ -36,43 +36,89 @@ export class WhatsappService {
   }
 
   async sendMessage(to: string, message: string) {
-    const body = {
-      messaging_product: 'whatsapp',
-      to: to,
-      text: { body: message },
-    };
-    await axios.post(this.API_URL, body, { headers: this.HEADERS });
+    try {
+      const body = {
+        messaging_product: 'whatsapp',
+        to: to,
+        type: 'text',
+        text: { 
+          preview_url: false,
+          body: message 
+        },
+      };
+      
+      console.log('Enviando mensaje:', JSON.stringify(body, null, 2));
+      
+      const response = await axios.post(this.API_URL, body, { 
+        headers: this.HEADERS 
+      });
+      
+      console.log('Mensaje enviado con éxito:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('Error al enviar mensaje:', error.response?.data || error.message);
+      throw new Error('No se pudo enviar el mensaje: ' + (error.response?.data?.error?.message || error.message));
+    }
   }
 
   async sendButtons(to: string, message: string, buttons: any[]) {
-    const body = {
-      messaging_product: 'whatsapp',
-      to: to,
-      type: 'interactive',
-      interactive: {
-        type: 'button',
-        body: {
-          text: message
-        },
-        action: {
-          buttons: buttons
+    try {
+      const body = {
+        messaging_product: 'whatsapp',
+        to: to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: {
+            text: message
+          },
+          action: {
+            buttons: buttons
+          }
         }
-      }
-    };
-    await axios.post(this.API_URL, body, { headers: this.HEADERS });
+      };
+      
+      console.log('Enviando botones:', JSON.stringify(body, null, 2));
+      
+      const response = await axios.post(this.API_URL, body, { 
+        headers: this.HEADERS 
+      });
+      
+      console.log('Botones enviados con éxito:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('Error al enviar botones:', error.response?.data || error.message);
+      throw new Error('No se pudieron enviar los botones: ' + (error.response?.data?.error?.message || error.message));
+    }
   }
 
   async sendImage(to: string, imageUrl: string, caption: string) {
-    const body = {
-      messaging_product: 'whatsapp',
-      to: to,
-      type: 'image',
-      image: {
-        link: imageUrl,
-        caption: caption
-      }
-    };
-    await axios.post(this.API_URL, body, { headers: this.HEADERS });
+    try {
+      const body = {
+        messaging_product: 'whatsapp',
+        to: to,
+        type: 'image',
+        image: {
+          link: imageUrl,
+          caption: caption
+        }
+      };
+      
+      console.log('Enviando imagen:', JSON.stringify(body, null, 2));
+      
+      const response = await axios.post(this.API_URL, body, { 
+        headers: this.HEADERS 
+      });
+      
+      console.log('Imagen enviada con éxito:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('Error al enviar imagen:', error.response?.data || error.message);
+      
+      // Fallback: enviar mensaje de texto con la URL del QR
+      const fallbackMessage = `${caption}\n\nSi no puedes ver el código QR, visita este enlace: ${imageUrl}`;
+      return this.sendMessage(to, fallbackMessage);
+    }
   }
 
   detectarTrigger(text: string, regex: RegExp): boolean {
