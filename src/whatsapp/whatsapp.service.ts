@@ -14,8 +14,8 @@ export class WhatsappService {
   // Triggers para iniciar conversación
   private readonly TRIGGERS_BIENVENIDA = new RegExp(/(hola|buenas|hello|hi|buenos días|buenas tardes|buenas noches)/, 'i');
   
-  // Triggers para consulta de productos
-  private readonly TRIGGERS_PRODUCTOS = new RegExp(/(producto|comprar|precio|que tienen|qué tienen|oferta|menu|menú|catalogo|catálogo)/, 'i');
+  // Triggers para consulta de productos (actualizado con más variantes)
+  private readonly TRIGGERS_PRODUCTOS = new RegExp(/(producto|comprar|precio|que tienen|qué tienen|oferta|menu|menú|catalogo|catálogo|ver producto|ver productos|comprar café)/, 'i');
   
   // Almacenamiento simple de estados de usuario
   private userStates = new Map<string, { state: string, selectedProduct?: any }>();
@@ -160,7 +160,7 @@ export class WhatsappService {
     } else if (textLowerCase.includes('adiós') || textLowerCase.includes('chao') || textLowerCase.includes('hasta luego')) {
       return "¡Hasta luego! Espero verte pronto para disfrutar de nuestro café.";
     } else {
-      return "No estoy seguro de cómo responder a eso. ¿Te interesa conocer nuestros productos de café? Tenemos Samaipata, Catavi y Americano.";
+      return "No estuiro de cómo responder a eso. ¿Te interesa conocer nuestros productos de café? Tenemos Samaipata, Catavi y Americano.";
     }
   }
 
@@ -182,7 +182,10 @@ export class WhatsappService {
       }
     ];
 
-    const message = "¡Hola! 👋 Bienvenido a nuestra tienda de café. ¿En qué puedo ayudarte hoy?";
+    const message = "¡Hola! 👋 Bienvenido a nuestra tienda de café. ¿En qué puedo ayudarte hoy?\n\n" +
+      "Puedes seleccionar una opción o escribir:\n" +
+      "- 'productos' para ver nuestro catálogo\n" +
+      "- 'volver' en cualquier momento para regresar aquí";
 
     await this.sendButtons(to, message, buttons);
   }
@@ -196,25 +199,17 @@ export class WhatsappService {
       }
     }));
 
-    // Añadir botón para volver
-    buttons.push({
-      type: "reply",
-      reply: {
-        id: "volver",
-        title: "Volver al inicio"
-      }
-    });
-
+    // Solo podemos enviar máximo 3 botones, así que mostramos solo los productos
     const message = "¡Excelente! Tenemos estas opciones disponibles:\n\n" +
       this.productos.map(p => `*${p.nombre}* - $${p.precio}\n${p.descripcion}`).join('\n\n') +
-      "\n\nPor favor, selecciona una opción:";
+      "\n\nPor favor, selecciona una opción. Si deseas volver al inicio, escribe 'volver'.";
 
     await this.sendButtons(to, message, buttons);
   }
 
   private async handleProductSelection(text: string, from: string): Promise<string> {
-    // Verificar si el usuario quiere volver al inicio
-    if (text.toLowerCase().includes('volver')) {
+    // Verificar si el usuario quiere volver al inicio (ahora más flexible)
+    if (text.toLowerCase().includes('volver') || text.toLowerCase().includes('inicio')) {
       await this.sendWelcomeButtons(from);
       this.userStates.set(from, { state: 'initial' });
       return "";
