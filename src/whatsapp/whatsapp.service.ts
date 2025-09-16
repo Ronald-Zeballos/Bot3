@@ -319,12 +319,12 @@ private async setupGoogleAuth() {
       // Generar horarios disponibles (simulado por ahora)
       // En una implementación real, se calcularían los huecos entre eventos
       const availableSlots = [
-        { date: '2023-10-15', time: '09:00' },
-        { date: '2023-10-15', time: '11:00' },
-        { date: '2023-10-16', time: '10:00' },
-        { date: '2023-10-16', time: '14:00' },
-        { date: '2023-10-17', time: '09:30' },
-        { date: '2023-10-17', time: '15:00' },
+        { date: '2025-10-15', time: '09:00' },
+        { date: '2025-10-15', time: '11:00' },
+        { date: '2025-10-16', time: '10:00' },
+        { date: '2025-10-16', time: '14:00' },
+        { date: '2025-10-17', time: '09:30' },
+        { date: '2025-10-17', time: '15:00' },
       ];
       
       return availableSlots;
@@ -341,7 +341,7 @@ private async setupGoogleAuth() {
     this.userStates.set(from, { 
       ...this.userStates.get(from),
       state: 'awaiting_name',
-      appointmentDate: '2023-10-15', // Fecha ejemplo
+      appointmentDate: '2025-10-15', // Fecha ejemplo
       appointmentTime: '09:00' // Hora ejemplo
     });
     
