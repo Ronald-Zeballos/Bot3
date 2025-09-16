@@ -53,31 +53,57 @@ export class WhatsappService {
     );
   }
 
-  /* =========================
+/* =========================
      Google Sheets (autenticación robusta)
      ========================= */
- private async setupGoogleSheetsAuth() {
-    if (!this.SPREADSHEET_ID) throw new Error('Falta SHEETS_SPREADSHEET_ID');
-    let auth;
-    const raw = process.env.GOOGLE_CREDENTIALS_JSON;
-    if (raw && raw.trim()) {
-      const creds = JSON.parse(raw);
-      auth = new google.auth.GoogleAuth({
-        credentials: creds,
-        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-      });
-    } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-      auth = new google.auth.GoogleAuth({
-        keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-      });
-    } else {
-      throw new Error('No hay credenciales de Google. Define GOOGLE_CREDENTIALS_JSON o GOOGLE_APPLICATION_CREDENTIALS.');
+  private async setupGoogleSheetsAuth() {
+    this.SPREADSHEET_ID = (
+      process.env.SHEETS_SPREADSHEET_ID ||
+      process.env.GOOGLE_SHEETS_ID ||
+      process.env.GOOGLE_SHEET_ID ||
+      ''
+    ).trim();
+    if (!this.SPREADSHEET_ID) {
+      throw new Error('Falta SHEETS_SPREADSHEET_ID/GOOGLE_SHEETS_ID (usa SOLO el ID de la planilla, no la URL).');
     }
-    const client = await auth.getClient();
-    this.sheets = google.sheets({ version: 'v4', auth: client });
-  }
 
+    const scopes = ['https://www.googleapis.com/auth/spreadsheets'];
+
+    // 1) Preferimos GOOGLE_CREDENTIALS_JSON (JSON directo o base64)
+    const raw = process.env.GOOGLE_CREDENTIALS_JSON?.trim();
+    if (raw) {
+      let creds: any;
+      try {
+        creds = JSON.parse(raw);
+      } catch {
+        try {
+          const decoded = Buffer.from(raw, 'base64').toString('utf8');
+          creds = JSON.parse(decoded);
+        } catch {
+          throw new Error('GOOGLE_CREDENTIALS_JSON no es JSON válido ni base64 de JSON.');
+        }
+      }
+      const auth = new google.auth.GoogleAuth({ credentials: creds, scopes });
+      this.sheets = google.sheets({ version: 'v4', auth });
+      console.log('[sheets] auth por GOOGLE_CREDENTIALS_JSON ok');
+      return;
+    }
+
+    // 2) Si no hay JSON, usar ruta a archivo
+    const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+    if (!keyFile) {
+      throw new Error(
+        'Faltan credenciales: define GOOGLE_CREDENTIALS_JSON (contenido) o GOOGLE_APPLICATION_CREDENTIALS (ruta a archivo .json).'
+      );
+    }
+    if (keyFile.length > 300) {
+      throw new Error('GOOGLE_APPLICATION_CREDENTIALS debe ser una *ruta* a archivo, no el contenido JSON.');
+    }
+
+    const auth = new google.auth.GoogleAuth({ keyFile, scopes });
+    this.sheets = google.sheets({ version: 'v4', auth });
+    console.log('[sheets] auth por GOOGLE_APPLICATION_CREDENTIALS ok:', keyFile);
+}
 
   /* =========================
      Envío de mensajes WhatsApp
