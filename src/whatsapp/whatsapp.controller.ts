@@ -17,35 +17,46 @@ export class WhatsappController {
   @Post()
   @HttpCode(HttpStatus.OK)
   async handleWebhook(@Body() body: any) {
-    const entry = body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
+    try {
+      const entry = body.entry?.[0];
+      const changes = entry?.changes?.[0];
+      const message = changes?.value?.messages?.[0];
 
-    if (message) {
-      const from = message.from;
+      if (message) {
+        const from = message.from;
 
-      if (message.type === 'text') {
-        const userText = message.text.body;
-        const response = await this.whatsappService.generarRespuesta(userText, from);
-        
-        if (response) {
-          await this.whatsappService.sendMessage(from, response);
-        }
-      }
-      // Manejar respuestas de botones
-      else if (message.type === 'interactive') {
-        const interactiveType = message.interactive?.type;
-        
-        if (interactiveType === 'button_reply') {
-          const buttonId = message.interactive.button_reply.id;
-          const buttonText = this.whatsappService.getButtonTextById(buttonId);
-          const response = await this.whatsappService.generarRespuesta(buttonText, from);
+        if (message.type === 'text') {
+          const userText = message.text.body;
+          console.log(`Mensaje recibido de ${from}: ${userText}`);
           
-          if (response) {
+          const response = await this.whatsappService.generarRespuesta(userText, from);
+          
+          if (response && response.trim() !== "") {
             await this.whatsappService.sendMessage(from, response);
           }
         }
+        // Manejar respuestas de botones
+        else if (message.type === 'interactive') {
+          const interactiveType = message.interactive?.type;
+          
+          if (interactiveType === 'button_reply') {
+            const buttonId = message.interactive.button_reply.id;
+            const buttonText = this.whatsappService.getButtonTextById(buttonId);
+            console.log(`Botón pulsado por ${from}: ${buttonId} - ${buttonText}`);
+            
+            const response = await this.whatsappService.generarRespuesta(buttonText, from);
+            
+            if (response && response.trim() !== "") {
+              await this.whatsappService.sendMessage(from, response);
+            }
+          }
+        }
       }
+
+      return { status: 'ok' };
+    } catch (error) {
+      console.error('Error en handleWebhook:', error);
+      return { status: 'error', message: error.message };
     }
   }
 }
