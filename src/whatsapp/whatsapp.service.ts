@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import * as QRCode from 'qrcode';
+import { google } from 'googleapis';
+import * as PDFDocument from 'pdfkit';
+import * as fs from 'fs';
+import * as path from 'path';
+import { GoogleAuth } from 'google-auth-library'; // Importación añadida
 
 @Injectable()
 export class WhatsappService {
@@ -11,21 +15,27 @@ export class WhatsappService {
     'Content-Type': 'application/json',
   };
   
-  // Triggers para iniciar conversación
-  private readonly TRIGGERS_BIENVENIDA = new RegExp(/(hola|buenas|hello|hi|buenos días|buenas tardes|buenas noches)/, 'i');
+  // Triggers para servicios
+  private readonly TRIGGERS_TRIBUTARIO = new RegExp(/(impuestos|tributario|tributaria|fiscal|sat)/, 'i');
+  private readonly TRIGGERS_LEGAL = new RegExp(/(legal|contrato|ley|abogado|jurídico)/, 'i');
+  private readonly TRIGGERS_LABORAL = new RegExp(/(laboral|empleo|trabajo|contratación|despido)/, 'i');
+  private readonly TRIGGERS_CONTABILIDAD = new RegExp(/(contabilidad|contable|libros contables|declaraciones|facturación)/, 'i');
+  private readonly TRIGGERS_SISTEMAS = new RegExp(/(sistemas|software|redes|computadoras|informática|tecnología)/, 'i');
   
-  // Triggers para consulta de productos (actualizado con más variantes)
-  private readonly TRIGGERS_PRODUCTOS = new RegExp(/(producto|comprar|precio|que tienen|qué tienen|oferta|menu|menú|catalogo|catálogo|ver producto|ver productos|comprar café)/, 'i');
+  // Almacenamiento de estados de usuario
+  private userStates = new Map<string, { 
+    state: string, 
+    serviceType?: string, 
+    appointmentDate?: string,
+    appointmentTime?: string,
+    clientData?: any 
+  }>();
   
-  // Almacenamiento simple de estados de usuario
-  private userStates = new Map<string, { state: string, selectedProduct?: any }>();
-  
-  // Catálogo de productos
-  private productos = [
-    { id: 1, nombre: "Café Samaipata", precio: 45, descripcion: "Tueste medio con notas a chocolate y cítricos" },
-    { id: 2, nombre: "Café Catavi", precio: 52, descripcion: "Notas a frutos rojos y tueste ligero" },
-    { id: 3, nombre: "Café Americano", precio: 38, descripcion: "Blend clásico y balanceado" }
-  ];
+  // Calendario y APIs de Google
+  private calendar: any;
+  private sheets: any;
+  private readonly CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
+  private readonly SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 
   private readonly geminiGenAI: GoogleGenerativeAI;
   private readonly geminiModel;
@@ -33,7 +43,35 @@ export class WhatsappService {
   constructor() {
     this.geminiGenAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     this.geminiModel = this.geminiGenAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    
+    // Configurar autenticación de Google
+    this.setupGoogleAuth();
   }
+
+private async setupGoogleAuth() {
+  try {
+    const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+    
+    // Solución alternativa: crear auth directamente con google.auth.fromJSON
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        client_email: serviceAccount.client_email,
+        private_key: serviceAccount.private_key,
+      },
+      scopes: ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/spreadsheets'],
+    });
+
+    const authClient = await auth.getClient();
+
+    // Usar 'as any' para evitar conflictos de tipos
+    this.calendar = google.calendar({ version: 'v3', auth: authClient as any });
+    this.sheets = google.sheets({ version: 'v4', auth: authClient as any });
+    
+    console.log('Autenticación con Google API configurada correctamente');
+  } catch (error) {
+    console.error('Error configurando autenticación de Google:', error);
+  }
+}
 
   async sendMessage(to: string, message: string) {
     try {
@@ -115,8 +153,8 @@ export class WhatsappService {
     } catch (error) {
       console.error('Error al enviar imagen:', error.response?.data || error.message);
       
-      // Fallback: enviar mensaje de texto con la URL del QR
-      const fallbackMessage = `${caption}\n\nSi no puedes ver el código QR, visita este enlace: ${imageUrl}`;
+      // Fallback: enviar mensaje de texto con la URL
+      const fallbackMessage = `${caption}\n\nSi no puedes ver la imagen, visita este enlace: ${imageUrl}`;
       return this.sendMessage(to, fallbackMessage);
     }
   }
@@ -130,37 +168,30 @@ export class WhatsappService {
     const userState = this.userStates.get(from) || { state: 'initial' };
 
     // Lógica de estados
-    if (userState.state === 'awaiting_product_selection') {
-      return await this.handleProductSelection(text, from);
-    } else if (userState.state === 'awaiting_payment') {
-      return this.handlePaymentConfirmation(text, from);
-    } else if (userState.state === 'awaiting_coffee_info') {
-      // Si el usuario está en modo información, usar IA para responder
-      const response = await this.generateGeminiResponse(text);
-      this.userStates.set(from, { state: 'initial' }); // Volver al estado inicial
-      return response;
+    if (userState.state === 'awaiting_service_type') {
+      return await this.handleServiceSelection(text, from);
+    } else if (userState.state === 'awaiting_appointment_confirmation') {
+      return await this.handleAppointmentConfirmation(text, from);
+    } else if (userState.state === 'awaiting_contact_info') {
+      return await this.handleContactInfo(text, from);
+    } else if (userState.state === 'awaiting_name') {
+      return await this.handleNameInput(text, from);
+    } else if (userState.state === 'awaiting_phone') {
+      return await this.handlePhoneInput(text, from);
+    } else if (userState.state === 'awaiting_email') {
+      return await this.handleEmailInput(text, from);
     }
 
     // Lógica principal con if/else
-    if (this.detectarTrigger(textLowerCase, this.TRIGGERS_BIENVENIDA)) {
+    if (this.detectarTrigger(textLowerCase, new RegExp(/(hola|buenas|hello|hi|buenos días|buenas tardes|buenas noches|inicio|empezar)/, 'i'))) {
       await this.sendWelcomeButtons(from);
       return "";
-    } else if (this.detectarTrigger(textLowerCase, this.TRIGGERS_PRODUCTOS)) {
-      await this.sendProductButtons(from);
-      this.userStates.set(from, { state: 'awaiting_product_selection' });
-      return "";
-    } else if (textLowerCase.includes('samaipata')) {
-      return "El café Samaipata es de tueste medio con notas a chocolate y cítricos. Precio: $45. ¿Te interesa comprarlo?";
-    } else if (textLowerCase.includes('catavi')) {
-      return "El café Catavi se caracteriza por sus notas a frutos rojos y un tueste ligero. Precio: $52. ¿Te interesa comprarlo?";
-    } else if (textLowerCase.includes('americano')) {
-      return "Nuestro café Americano es un blend de granos que ofrece un sabor clásico y balanceado. Precio: $38. ¿Te interesa comprarlo?";
-    } else if (textLowerCase.includes('gracias') || textLowerCase.includes('gracias')) {
+    } else if (textLowerCase.includes('gracias') || textLowerCase.includes('thank you')) {
       return "¡Gracias a ti! ¿Hay algo más en lo que pueda ayudarte?";
     } else if (textLowerCase.includes('adiós') || textLowerCase.includes('chao') || textLowerCase.includes('hasta luego')) {
-      return "¡Hasta luego! Espero verte pronto para disfrutar de nuestro café.";
+      return "¡Hasta luego! Espero verte pronto. No dudes en contactarnos si necesitas más información.";
     } else {
-      return "No estuiro de cómo responder a eso. ¿Te interesa conocer nuestros productos de café? Tenemos Samaipata, Catavi y Americano.";
+      return "No estoy seguro de cómo responder a eso. ¿Te interesa conocer nuestros servicios? Escribe 'hola' para comenzar.";
     }
   }
 
@@ -169,148 +200,272 @@ export class WhatsappService {
       {
         type: "reply",
         reply: {
-          id: "ver_productos",
-          title: "Ver productos"
+          id: "servicios",
+          title: "Ver servicios"
         }
       },
       {
         type: "reply",
         reply: {
-          id: "info_cafe",
-          title: "Saber sobre café"
+          id: "agendar_cita",
+          title: "Agendar cita"
         }
       }
     ];
 
-    const message = "¡Hola! 👋 Bienvenido a nuestra tienda de café. ¿En qué puedo ayudarte hoy?\n\n" +
-      "Puedes seleccionar una opción o escribir:\n" +
-      "- 'productos' para ver nuestro catálogo\n" +
-      "- 'volver' en cualquier momento para regresar aquí";
+    const message = "¡Hola! 👋 Bienvenido a nuestros servicios profesionales. ¿En qué puedo ayudarte hoy?\n\n" +
+      "Puedes seleccionar una opción o escribir directamente qué servicio necesitas:\n" +
+      "- Asesoría tributaria, legal o laboral\n" +
+      "- Contabilidad tercerizada\n" +
+      "- Revisión de sistemas informáticos\n" +
+      "- Otros servicios";
 
+    this.userStates.set(to, { state: 'awaiting_service_type' });
     await this.sendButtons(to, message, buttons);
   }
 
-  private async sendProductButtons(to: string) {
-    const buttons = this.productos.map((producto) => ({
-      type: "reply",
-      reply: {
-        id: `product_${producto.id}`,
-        title: `${producto.nombre} - $${producto.precio}`
-      }
-    }));
-
-    // Solo podemos enviar máximo 3 botones, así que mostramos solo los productos
-    const message = "¡Excelente! Tenemos estas opciones disponibles:\n\n" +
-      this.productos.map(p => `*${p.nombre}* - $${p.precio}\n${p.descripcion}`).join('\n\n') +
-      "\n\nPor favor, selecciona una opción. Si deseas volver al inicio, escribe 'volver'.";
-
-    await this.sendButtons(to, message, buttons);
-  }
-
-  private async handleProductSelection(text: string, from: string): Promise<string> {
-    // Verificar si el usuario quiere volver al inicio (ahora más flexible)
-    if (text.toLowerCase().includes('volver') || text.toLowerCase().includes('inicio')) {
-      await this.sendWelcomeButtons(from);
-      this.userStates.set(from, { state: 'initial' });
-      return "";
-    }
-
-    // Verificar si el texto coincide con algún producto o su ID
-    let selectedProduct = null;
-    for (const producto of this.productos) {
-      if (text.toLowerCase().includes(producto.nombre.toLowerCase()) || text.includes(producto.id.toString())) {
-        selectedProduct = producto;
-        break;
-      }
-    }
-
-    if (selectedProduct) {
-      this.userStates.set(from, { 
-        state: 'awaiting_payment', 
-        selectedProduct 
-      });
-
-      // Generar QR code usando un servicio externo (más confiable)
-      const qrImageUrl = await this.generateQRCode(selectedProduct.precio, from);
-      
-      await this.sendImage(
-        from, 
-        qrImageUrl, 
-        `✅ *${selectedProduct.nombre} seleccionado*\n\nPrecio: $${selectedProduct.precio}\n\nEscanea el QR code para completar tu pago.`
-      );
-
-      return "¡Perfecto! He enviado un QR code para que completes tu pago. ¿Necesitas algo más?";
-    } else if (text.toLowerCase().includes('saber sobre café') || text.includes('info_cafe')) {
-      // Cambiar a modo información sobre café
-      this.userStates.set(from, { state: 'awaiting_coffee_info' });
-      return "Claro, estaré encantado de responder tus preguntas sobre café. ¿Qué te gustaría saber?";
-    } else {
-      await this.sendProductButtons(from);
-      return "No reconocí esa opción. Por favor selecciona uno de nuestros productos:";
-    }
-  }
-
-  private async generateQRCode(monto: number, referencia: string): Promise<string> {
-    // Usar un servicio de generación de QR en línea
-    const paymentData = {
-      merchant: "Cafetería Premium",
-      account: "1234567890",
-      amount: monto,
-      currency: "USD",
-      reference: `pedido_${referencia}_${Date.now()}`
-    };
-
-    // Codificar los datos para la URL
-    const qrData = encodeURIComponent(JSON.stringify(paymentData));
+  private async handleServiceSelection(text: string, from: string): Promise<string> {
+    const textLowerCase = text.toLowerCase().trim();
+    let serviceType = '';
     
-    // Usar un servicio de generación de QR gratuito
-    return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${qrData}`;
+    if (this.detectarTrigger(textLowerCase, this.TRIGGERS_TRIBUTARIO) || 
+        this.detectarTrigger(textLowerCase, this.TRIGGERS_LEGAL) || 
+        this.detectarTrigger(textLowerCase, this.TRIGGERS_LABORAL)) {
+      serviceType = 'Asesoría tributaria, legal y laboral';
+    } else if (this.detectarTrigger(textLowerCase, this.TRIGGERS_CONTABILIDAD)) {
+      serviceType = 'Contabilidad tercerizada';
+    } else if (this.detectarTrigger(textLowerCase, this.TRIGGERS_SISTEMAS)) {
+      serviceType = 'Revisión de sistemas informáticos';
+    } else {
+      serviceType = 'Otros servicios o consultas generales';
+    }
+
+    // Actualizar estado del usuario
+    const userState = this.userStates.get(from) || { state: 'awaiting_service_type' };
+    userState.serviceType = serviceType;
+    userState.state = 'awaiting_appointment_confirmation';
+    this.userStates.set(from, userState);
+
+    // Redirigir al número especificado
+    const redirectMessage = `He identificado que necesitas: ${serviceType}. \n\nSerás contactado por nuestro especialista en breve al número +591 65900645. \n\n¿Te gustaría agendar una cita ahora?`;
+    
+    const buttons = [
+      {
+        type: "reply",
+        reply: {
+          id: "agendar_si",
+          title: "Sí, agendar cita"
+        }
+      },
+      {
+        type: "reply",
+        reply: {
+          id: "agendar_no",
+          title: "No, gracias"
+        }
+      }
+    ];
+
+    await this.sendButtons(from, redirectMessage, buttons);
+    return "";
   }
 
-  private handlePaymentConfirmation(text: string, from: string): string {
-    // Lógica para confirmar pago (simulada)
-    this.userStates.set(from, { state: 'initial' });
-    return "¡Gracias por tu compra! Tu pedido está siendo procesado. Te avisaremos cuando esté listo.";
+  private async handleAppointmentConfirmation(text: string, from: string): Promise<string> {
+    const textLowerCase = text.toLowerCase().trim();
+    
+    if (textLowerCase.includes('si') || textLowerCase.includes('sí') || textLowerCase.includes('agendar_si')) {
+      // Mostrar disponibilidad de citas
+      const availableSlots = await this.getAvailableAppointmentSlots();
+      
+      if (availableSlots.length === 0) {
+        return "Lo siento, no hay horarios disponibles en este momento. Por favor, intenta más tarde o contacta directamente al +591 65900645.";
+      }
+      
+      let message = "Estos son los horarios disponibles:\n\n";
+      availableSlots.forEach((slot, index) => {
+        message += `${index + 1}. ${slot.date} a las ${slot.time}\n`;
+      });
+      
+      message += "\nPor favor, responde con el número de la opción que prefieres.";
+      
+      this.userStates.set(from, { 
+        ...this.userStates.get(from),
+        state: 'awaiting_contact_info'
+      });
+      
+      return message;
+    } else {
+      this.userStates.set(from, { state: 'initial' });
+      return "De acuerdo. Serás contactado pronto por nuestro especialista. ¡Gracias!";
+    }
+  }
+
+  private async getAvailableAppointmentSlots(): Promise<{date: string, time: string}[]> {
+    try {
+      // Obtener horarios disponibles del calendario
+      const now = new Date();
+      const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      
+      const response = await this.calendar.events.list({
+        calendarId: this.CALENDAR_ID,
+        timeMin: now.toISOString(),
+        timeMax: nextWeek.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+      });
+      
+      const events = response.data.items || [];
+      
+      // Generar horarios disponibles (simulado por ahora)
+      // En una implementación real, se calcularían los huecos entre eventos
+      const availableSlots = [
+        { date: '2023-10-15', time: '09:00' },
+        { date: '2023-10-15', time: '11:00' },
+        { date: '2023-10-16', time: '10:00' },
+        { date: '2023-10-16', time: '14:00' },
+        { date: '2023-10-17', time: '09:30' },
+        { date: '2023-10-17', time: '15:00' },
+      ];
+      
+      return availableSlots;
+    } catch (error) {
+      console.error('Error obteniendo horarios disponibles:', error);
+      return [];
+    }
+  }
+
+  private async handleContactInfo(text: string, from: string): Promise<string> {
+    // Aquí se procesaría la selección de horario
+    // Por simplicidad, asumimos que el usuario seleccionó un horario válido
+    
+    this.userStates.set(from, { 
+      ...this.userStates.get(from),
+      state: 'awaiting_name',
+      appointmentDate: '2023-10-15', // Fecha ejemplo
+      appointmentTime: '09:00' // Hora ejemplo
+    });
+    
+    return "Perfecto. Para agendar tu cita, necesito algunos datos:\n\nPor favor, escribe tu nombre completo.";
+  }
+
+  private async handleNameInput(text: string, from: string): Promise<string> {
+    const userState = this.userStates.get(from);
+    userState.clientData = { nombre: text };
+    userState.state = 'awaiting_phone';
+    this.userStates.set(from, userState);
+    
+    return "Gracias. Ahora por favor escribe tu número de teléfono.";
+  }
+
+  private async handlePhoneInput(text: string, from: string): Promise<string> {
+    const userState = this.userStates.get(from);
+    userState.clientData.telefono = text;
+    userState.state = 'awaiting_email';
+    this.userStates.set(from, userState);
+    
+    return "Ahora por favor escribe tu correo electrónico.";
+  }
+
+  private async handleEmailInput(text: string, from: string): Promise<string> {
+    const userState = this.userStates.get(from);
+    userState.clientData.email = text;
+    userState.state = 'initial';
+    this.userStates.set(from, userState);
+    
+    // Guardar datos en Google Sheets
+    await this.saveClientData(userState);
+    
+    // Generar PDF de confirmación
+    const pdfUrl = await this.generateConfirmationPDF(userState);
+    
+    // Enviar confirmación
+    await this.sendMessage(from, `¡Perfecto! Tu cita ha sido agendada para el ${userState.appointmentDate} a las ${userState.appointmentTime}.\n\nPronto recibirás una confirmación por correo.`);
+    
+    // Enviar PDF si se generó correctamente
+    if (pdfUrl) {
+      await this.sendImage(from, pdfUrl, "Aquí tienes tu comprobante de cita.");
+    }
+    
+    return "¿Necesitas algo más?";
+  }
+
+  private async saveClientData(userState: any): Promise<boolean> {
+    try {
+      const values = [
+        [
+          userState.clientData.nombre,
+          userState.clientData.telefono,
+          userState.clientData.email,
+          userState.serviceType,
+          userState.appointmentDate,
+          userState.appointmentTime,
+          new Date().toISOString()
+        ]
+      ];
+      
+      const response = await this.sheets.spreadsheets.values.append({
+        spreadsheetId: this.SPREADSHEET_ID,
+        range: 'A1',
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: values
+        }
+      });
+      
+      console.log('Datos guardados en Google Sheets:', response.data);
+      return true;
+    } catch (error) {
+      console.error('Error guardando datos en Google Sheets:', error);
+      return false;
+    }
+  }
+
+  private async generateConfirmationPDF(userState: any): Promise<string> {
+    try {
+      const doc = new PDFDocument();
+      const fileName = `cita_${userState.clientData.nombre.replace(/\s+/g, '_')}_${Date.now()}.pdf`;
+      const filePath = path.join(__dirname, '..', 'tmp', fileName);
+      
+      // Asegurarse de que el directorio existe
+      if (!fs.existsSync(path.dirname(filePath))) {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      }
+      
+      // Guardar PDF localmente
+      doc.pipe(fs.createWriteStream(filePath));
+      
+      // Contenido del PDF
+      doc.fontSize(20).text('Confirmación de Cita', 100, 100);
+      doc.fontSize(12).text(`Nombre: ${userState.clientData.nombre}`, 100, 150);
+      doc.text(`Teléfono: ${userState.clientData.telefono}`, 100, 170);
+      doc.text(`Email: ${userState.clientData.email}`, 100, 190);
+      doc.text(`Servicio: ${userState.serviceType}`, 100, 210);
+      doc.text(`Fecha: ${userState.appointmentDate}`, 100, 230);
+      doc.text(`Hora: ${userState.appointmentTime}`, 100, 250);
+      
+      doc.end();
+      
+      // En una implementación real, aquí subirías el PDF a un servicio de almacenamiento
+      // y devolverías la URL pública. Por ahora, devolvemos una URL de ejemplo.
+      return `https://ejemplo.com/pdfs/${fileName}`;
+    } catch (error) {
+      console.error('Error generando PDF:', error);
+      return null;
+    }
   }
 
   // Método para obtener el texto del botón por ID
   getButtonTextById(buttonId: string): string {
-    if (buttonId === 'ver_productos') {
-      return 'Ver productos';
-    } else if (buttonId === 'info_cafe') {
-      return 'Saber sobre café';
-    } else if (buttonId === 'volver') {
-      return 'Volver';
+    if (buttonId === 'servicios') {
+      return 'Ver servicios';
+    } else if (buttonId === 'agendar_cita') {
+      return 'Agendar cita';
+    } else if (buttonId === 'agendar_si') {
+      return 'Sí, agendar cita';
+    } else if (buttonId === 'agendar_no') {
+      return 'No, gracias';
     }
     
-    const match = buttonId.match(/product_(\d+)/);
-    if (match) {
-      const productId = parseInt(match[1]);
-      const product = this.productos.find(p => p.id === productId);
-      return product ? product.nombre : buttonId;
-    }
     return buttonId;
-  }
-
-  private async generateGeminiResponse(userText: string): Promise<string> {
-    try {
-      const prompt = `Eres un experto en café que trabaja en una tienda. Responde únicamente preguntas específicas sobre café.
-      Mantén tus respuestas breves y centradas en la pregunta.
-      Si la pregunta no está relacionada con café, di amablemente: "Solo puedo responder preguntas sobre café. ¿Te interesa conocer nuestros productos?".
-      
-      Pregunta: ${userText}`;
-
-      const result = await this.geminiModel.generateContent(prompt);
-      const response = result.response;
-      let responseText = response.text();
-
-      // Limpiar la respuesta de la IA
-      responseText = responseText.replace(/\*/g, '');
-
-      return responseText;
-    } catch (error) {
-      console.error('Error al generar respuesta con Gemini:', error);
-      return "Lo siento, tengo problemas para entenderte en este momento. ¿Te interesa conocer nuestros productos?";
-    }
   }
 }
