@@ -57,7 +57,6 @@ export class WhatsappController {
                 const buttonTitle = message.interactive?.button_reply?.title; // opcional
                 console.log(`🖲️ Button reply de ${from}: id=${buttonId} title=${buttonTitle}`);
 
-                // PASA EL ID COMO 3er ARGUMENTO (buttonId). El texto es irrelevante aquí.
                 const response = await this.whatsappService.generarRespuesta('', from, buttonId);
                 if (response && response.trim() !== '') {
                   await this.whatsappService.sendMessage(from, response);
@@ -70,7 +69,6 @@ export class WhatsappController {
                 const listTitle = message.interactive?.list_reply?.title; // opcional
                 console.log(`📋 List reply de ${from}: id=${listId} title=${listTitle}`);
 
-                // Igual que con botones, pasa el id como buttonId
                 const response = await this.whatsappService.generarRespuesta('', from, listId);
                 if (response && response.trim() !== '') {
                   await this.whatsappService.sendMessage(from, response);
@@ -79,7 +77,7 @@ export class WhatsappController {
               }
             }
 
-            // 3) Otro tipo de mensajes (audios, imágenes, etc.) → responde ayuda simple
+            // 3) Otros tipos (audio, imagen, etc.)
             console.log(`ℹ️ Tipo no manejado: ${message.type}`);
             const fallback = 'Puedo ayudarte a *agendar una cita*. Escribe "hola" para comenzar.';
             await this.whatsappService.sendMessage(from, fallback);
