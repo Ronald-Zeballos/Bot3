@@ -43,29 +43,55 @@ export class PdfService {
     return !!this.s3;
   }
 
-  /* =========================
-     GENERADOR DE PDF (estético)
-     ========================= */
+  /* =====================================================
+     PDF ESTÉTICO Y ESTABLE (sin solapes, bien alineado)
+     ===================================================== */
   async generateConfirmationPDFBuffer(state: PdfState): Promise<{ buffer: Buffer; filename: string }> {
     const safeName = (state.clientData?.nombre || 'Cliente').replace(/\s+/g, '_');
     const filename = `cita_${safeName}_${Date.now()}.pdf`;
 
-    // Paleta institucional (predomina azul)
+    // Paleta
     const COLORS = {
       primary: '#0b57d0',
       primaryDark: '#0a45a7',
       text: '#1f2937',
       muted: '#6b7280',
-      line: '#dbe3f8',
+      line: '#e5ecff',
+      cardBorder: '#d6e2ff',
       badgeBg: '#e9f0ff',
       badgeText: '#0a45a7',
     };
 
-    // Resolución de ruta de logo:
-    // 1) env var LOGO_PATH (opcional)
-    // 2) Bot3/public/logo-russel.png (pedido)
-    // 3) ./public/logo-russel.png relativo al cwd
-    // 4) ./assets/logo.png (fallback)
+    // Fecha/hora actual (La Paz)
+    const nowStr = new Intl.DateTimeFormat('es-BO', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'America/La_Paz',
+    }).format(new Date());
+
+    const bookingId = this.makeBookingId(state);
+
+    // ------ Prepara QR (SIN dibujar nada aún)
+    const qrPayload = {
+      empresa: COMPANY_NAME,
+      nombre: state.clientData?.nombre || '',
+      telefono: state.clientData?.telefono || '',
+      email: state.clientData?.email || '',
+      fecha: state.appointmentDate,
+      hora: state.appointmentTime,
+      servicio: state.serviceType,
+      ubicacion: COMPANY_MAPS_URL,
+      id_reserva: bookingId,
+      generado: nowStr,
+    };
+    const qrBuffer = await QRCode.toBuffer(JSON.stringify(qrPayload), {
+      type: 'png',
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      scale: 6,
+    });
+
+    // Ruta del logo (varios fallbacks)
     const logoCandidates = [
       process.env.LOGO_PATH,
       path.resolve(process.cwd(), 'Bot3', 'public', 'logo-russel.png'),
@@ -81,16 +107,6 @@ export class PdfService {
       }
     });
 
-    // utilidades de formato
-    const toTitle = (s = '') => String(s || '').replace(/\s+/g, ' ').trim();
-    const nowStr = new Intl.DateTimeFormat('es-BO', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-      timeZone: 'America/La_Paz',
-    }).format(new Date());
-
-    const bookingId = this.makeBookingId(state);
-
     return await new Promise((resolve, reject) => {
       const doc = new (PDFDocument as any)({ margin: 48, size: 'A4', bufferPages: true });
       const chunks: Buffer[] = [];
@@ -99,214 +115,169 @@ export class PdfService {
       doc.on('end', () => resolve({ buffer: Buffer.concat(chunks), filename }));
       doc.on('error', reject);
 
-      // ======= HEADER DECORATIVO
+      // =============== LAYOUT BASE ===============
+      const PAGE = {
+        left: 50,
+        right: doc.page.width - 50,
+        top: 40,
+        bottom: doc.page.height - 50,
+        width: doc.page.width,
+        height: doc.page.height,
+      };
+
+      // Banda superior + barra secundaria
       this.drawHeaderBand(doc, COLORS);
 
-      // Logo chico arriba-izquierda
+      // Marca de agua (logo grande centrado, sin recortes)
+      if (logoPath) this.drawCenteredWatermark(doc, logoPath, 0.06);
+
+      // Logo pequeño arriba-izquierda
       if (logoPath) {
         try {
-          doc.image(logoPath, 52, 42, { width: 80 }); // pequeño en esquina sup. izquierda
+          doc.image(logoPath, PAGE.left, 46, { width: 84 });
         } catch {}
       }
 
-      // Títulos
+      // Títulos a la derecha
       doc
         .fillColor(COLORS.primaryDark)
         .font('Helvetica-Bold')
-        .fontSize(20)
-        .text('Comprobante de Cita', 0, 52, { align: 'right' });
-
+        .fontSize(22)
+        .text('Comprobante de Cita', PAGE.left, 50, { align: 'right' });
       doc
         .fillColor(COLORS.text)
         .font('Helvetica')
         .fontSize(11)
         .text(COMPANY_NAME, { align: 'right' });
 
-      // Línea base del encabezado
+      // Línea base
       doc
-        .moveTo(50, 100)
-        .lineTo(doc.page.width - 50, 100)
+        .moveTo(PAGE.left, 102)
+        .lineTo(PAGE.right, 102)
         .lineWidth(1)
         .strokeColor(COLORS.line)
         .stroke();
 
-      // ======= MARCA DE AGUA (logo grande centrado, casi transparente)
-      if (logoPath) {
-        try {
-          const wmWidth = doc.page.width * 0.55;
-          const wmX = (doc.page.width - wmWidth) / 2;
-          const wmY = (doc.page.height - wmWidth * 0.6) / 2; // aprox proporción
-          doc.save();
-          doc.opacity(0.06);
-          doc.image(logoPath, wmX, wmY, { width: wmWidth });
-          doc.restore();
-        } catch {}
-      }
-
-      // ======= BADGE (ID de reserva)
-      const badgeY = 112;
-      const badgeHeight = 22;
-      const badgeWidth = 180;
-      const badgeX = doc.page.width - 50 - badgeWidth;
+      // Badge con ID
+      const badge = { w: 190, h: 26, x: PAGE.right - 190, y: 112, r: 8 };
       doc
-        .roundedRect(badgeX, badgeY, badgeWidth, badgeHeight, 6)
+        .roundedRect(badge.x, badge.y, badge.w, badge.h, badge.r)
         .fillAndStroke(COLORS.badgeBg, COLORS.line);
       doc
         .fillColor(COLORS.badgeText)
         .font('Helvetica-Bold')
         .fontSize(10)
-        .text(`ID de reserva: ${bookingId}`, badgeX, badgeY + 5, { width: badgeWidth, align: 'center' });
+        .text(`ID de reserva: ${bookingId}`, badge.x, badge.y + 7, { width: badge.w, align: 'center' });
 
-      // ======= TARJETA PRINCIPAL (datos)
-      const cardTop = 150;
-      const cardLeft = 50;
-      const cardWidth = doc.page.width - 100;
-      const cardHeight = 250;
-
+      // =============== TARJETA DE DATOS ===============
+      const card = { x: PAGE.left, y: 150, w: PAGE.right - PAGE.left, h: 230, r: 14 };
       doc
-        .roundedRect(cardLeft, cardTop, cardWidth, cardHeight, 14)
+        .roundedRect(card.x, card.y, card.w, card.h, card.r)
         .lineWidth(1)
-        .fillOpacity(1)
         .fill('#ffffff')
-        .strokeColor(COLORS.line)
+        .strokeColor(COLORS.cardBorder)
         .stroke();
 
-      // Barra vertical azul a la izquierda de la tarjeta
-      doc
-        .save()
-        .rect(cardLeft, cardTop, 6, cardHeight)
-        .fill(COLORS.primary)
-        .restore();
+      // Barra de acento
+      doc.save().rect(card.x, card.y, 6, card.h).fill(COLORS.primary).restore();
 
-      // Texto dentro de la tarjeta
-      const innerLeft = cardLeft + 20;
-      const innerTop = cardTop + 18;
-      const colGap = 16;
+      const inner = { x: card.x + 20, y: card.y + 18, w: card.w - 40 };
 
-      // TITULO de sección
+      // Título de sección + subtexto
       doc
         .fillColor(COLORS.primaryDark)
         .font('Helvetica-Bold')
         .fontSize(14)
-        .text('Detalles de la cita', innerLeft, innerTop);
-
-      // Subtext generado
+        .text('Detalles de la cita', inner.x, inner.y);
       doc
         .fillColor(COLORS.muted)
         .font('Helvetica')
         .fontSize(10)
         .text(`Generado: ${nowStr} (America/La_Paz)`);
 
-      // Separador fino
+      // Separador
+      const sepY = inner.y + 32;
       doc
-        .moveTo(innerLeft, innerTop + 32)
-        .lineTo(cardLeft + cardWidth - 20, innerTop + 32)
+        .moveTo(inner.x, sepY)
+        .lineTo(inner.x + inner.w, sepY)
         .lineWidth(1)
         .strokeColor(COLORS.line)
         .stroke();
 
-      // Columna izquierda (datos del cliente)
-      const infoY = innerTop + 48;
-      let x = innerLeft;
-      let y = infoY;
+      // Rejilla 3 columnas: izq/centro/QR (anchos consistentes)
+      const col = {
+        left: inner.x,
+        center: inner.x + 210,
+        rightBox: inner.x + inner.w - 140,
+        y: sepY + 16,
+        lineW: 260,
+        rowH: 22,
+      };
 
-      y = this.infoRow(doc, x, y, 'Nombre', toTitle(state.clientData?.nombre || '—'), COLORS);
-      y = this.infoRow(doc, x, y, 'Teléfono', state.clientData?.telefono || '—', COLORS);
-      y = this.infoRow(doc, x, y, 'Email', (state.clientData?.email || '—'), COLORS);
+      // Columna izquierda (cliente)
+      let y = col.y;
+      y = this.infoRow(doc, col.left, y, 'Nombre', this.toTitle(state.clientData?.nombre || '—'), COLORS, col.lineW, col.rowH);
+      y = this.infoRow(doc, col.left, y, 'Teléfono', state.clientData?.telefono || '—', COLORS, col.lineW, col.rowH);
+      y = this.infoRow(doc, col.left, y, 'Email', state.clientData?.email || '—', COLORS, col.lineW, col.rowH);
 
-      // Columna centro (servicio/fecha/hora)
-      x = innerLeft + 200;
-      y = infoY;
-      y = this.infoRow(doc, x, y, 'Servicio', toTitle(state.serviceType || '—'), COLORS);
-      y = this.infoRow(doc, x, y, 'Fecha', state.appointmentDate || '—', COLORS);
-      y = this.infoRow(doc, x, y, 'Hora', state.appointmentTime || '—', COLORS);
+      // Columna centro (cita)
+      y = col.y;
+      y = this.infoRow(doc, col.center, y, 'Servicio', this.toTitle(state.serviceType || '—'), COLORS, col.lineW, col.rowH);
+      y = this.infoRow(doc, col.center, y, 'Fecha', state.appointmentDate || '—', COLORS, col.lineW, col.rowH);
+      y = this.infoRow(doc, col.center, y, 'Hora', state.appointmentTime || '—', COLORS, col.lineW, col.rowH);
 
-      // Columna derecha (QR)
-      const qrBoxX = cardLeft + cardWidth - 20 - 140;
-      const qrBoxY = infoY - 8;
-      const qrBoxSize = 140;
-
-      // Marco del QR
+      // Caja de QR a la derecha
+      const qrBox = { x: col.rightBox, y: col.y - 6, size: 140, r: 10 };
       doc
-        .roundedRect(qrBoxX, qrBoxY, qrBoxSize, qrBoxSize, 10)
+        .roundedRect(qrBox.x, qrBox.y, qrBox.size, qrBox.size, qrBox.r)
         .strokeColor(COLORS.line)
         .lineWidth(1)
         .stroke();
+      const inset = 10;
+      doc.image(qrBuffer, qrBox.x + inset, qrBox.y + inset, { width: qrBox.size - inset * 2 });
 
-      // Generar QR y dibujar dentro
-      (async () => {
-        try {
-          const qrPayload = {
-            empresa: COMPANY_NAME,
-            nombre: state.clientData?.nombre || '',
-            telefono: state.clientData?.telefono || '',
-            email: state.clientData?.email || '',
-            fecha: state.appointmentDate,
-            hora: state.appointmentTime,
-            servicio: state.serviceType,
-            ubicacion: COMPANY_MAPS_URL,
-            id_reserva: bookingId,
-            generado: nowStr,
-          };
-          const qrBuffer = await QRCode.toBuffer(JSON.stringify(qrPayload), { type: 'png', errorCorrectionLevel: 'M', margin: 1 });
-          const inset = 10;
-          doc.image(qrBuffer, qrBoxX + inset, qrBoxY + inset, { width: qrBoxSize - inset * 2 });
-        } catch {
-          // ignora si falla QR
-        }
+      // =============== UBICACIÓN / HORARIOS / RECOMENDACIONES ===============
+      const sectionStartY = card.y + card.h + 24;
 
-        // ======= SECCIÓN UBICACIÓN & HORARIOS
-        const sectionY = cardTop + cardHeight + 20;
+      // Ubicación
+      this.sectionHeading(doc, 'Ubicación', COLORS, sectionStartY);
+      doc
+        .fillColor(COLORS.text)
+        .font('Helvetica')
+        .fontSize(11)
+        .text('Russell Bedford Bolivia – Encinas Auditores y Consultores SRL', PAGE.left, sectionStartY + 18, {
+          width: PAGE.right - PAGE.left,
+        });
+      doc
+        .fillColor(COLORS.primaryDark)
+        .font('Helvetica-Bold')
+        .text(COMPANY_MAPS_URL, { link: COMPANY_MAPS_URL, underline: true });
 
-        // Sección ubicación
-        this.sectionHeading(doc, 'Ubicación', COLORS, sectionY);
-        doc
-          .fillColor(COLORS.text)
-          .font('Helvetica')
-          .fontSize(11)
-          .text(
-            'Russell Bedford Bolivia – Encinas Auditores y Consultores SRL',
-            50,
-            sectionY + 18,
-            { width: doc.page.width - 100 }
-          )
-          .moveDown(0.3);
+      // Horarios
+      const horariosY = sectionStartY + 58;
+      this.sectionHeading(doc, 'Atención', COLORS, horariosY);
+      doc
+        .fillColor(COLORS.text)
+        .font('Helvetica')
+        .fontSize(11)
+        .text(HOURS_TEXT, PAGE.left, horariosY + 18);
 
-        // Enlace clickeable a Google Maps (exactamente como lo pediste)
-        doc
-          .fillColor(COLORS.primaryDark)
-          .font('Helvetica-Bold')
-          .text(COMPANY_MAPS_URL, {
-            link: COMPANY_MAPS_URL,
-            underline: true,
-          });
+      // Recomendaciones
+      const notesY = horariosY + 56;
+      this.sectionHeading(doc, 'Recomendaciones', COLORS, notesY);
+      doc
+        .fillColor(COLORS.text)
+        .font('Helvetica')
+        .fontSize(11)
+        .text('• Preséntate 5 minutos antes de la cita.', PAGE.left, notesY + 18)
+        .text('• Trae tu documentación o información relevante.')
+        .text(`• Si necesitas reprogramar o cancelar, contáctanos: ${COMPANY_PHONE}.`);
 
-        // Horarios
-        const horariosY = sectionY + 62;
-        this.sectionHeading(doc, 'Atención', COLORS, horariosY);
-        doc
-          .fillColor(COLORS.text)
-          .font('Helvetica')
-          .fontSize(11)
-          .text(HOURS_TEXT, 50, horariosY + 18);
+      // Footer
+      this.drawFooter(doc, COLORS, bookingId);
 
-        // Notas / Recomendaciones
-        const notesY = horariosY + 58;
-        this.sectionHeading(doc, 'Recomendaciones', COLORS, notesY);
-        doc
-          .fillColor(COLORS.text)
-          .font('Helvetica')
-          .fontSize(11)
-          .text('• Preséntate 5 minutos antes de la cita.', 50, notesY + 18)
-          .text('• Trae tu documentación o información relevante.', 50)
-          .text(`• Si necesitas reprogramar o cancelar, contáctanos: ${COMPANY_PHONE}.`, 50);
-
-        // ======= FOOTER
-        this.drawFooter(doc, COLORS, bookingId);
-
-        // FIN
-        doc.end();
-      })();
+      // FIN
+      doc.end();
     });
   }
 
@@ -323,30 +294,24 @@ export class PdfService {
         Body: buffer,
         ContentType: contentType,
         ACL: 'public-read',
-      })
+      }),
     );
     return `https://${Bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/citas/${filename}`;
   }
 
   /* =========================
-     HELPERS DE DIBUJO/FORMATO
+     HELPERS VISUALES
      ========================= */
   private drawHeaderBand(doc: PDFKit.PDFDocument, COLORS: any) {
-    // Banda superior azul con sutil variación (dos rectángulos)
-    doc
-      .save()
-      .rect(0, 0, doc.page.width, 40)
-      .fill(COLORS.primary);
-    doc
-      .rect(0, 40, doc.page.width, 24)
-      .fill(COLORS.badgeBg);
+    doc.save();
+    doc.rect(0, 0, doc.page.width, 42).fill(COLORS.primary);
+    doc.rect(0, 42, doc.page.width, 24).fill('#f5f8ff');
     doc.restore();
   }
 
   private drawFooter(doc: PDFKit.PDFDocument, COLORS: any, bookingId: string) {
     const y = doc.page.height - 70;
 
-    // Línea separadora
     doc
       .moveTo(50, y)
       .lineTo(doc.page.width - 50, y)
@@ -354,48 +319,33 @@ export class PdfService {
       .strokeColor(COLORS.line)
       .stroke();
 
-    // Texto de contacto y marca
     doc
       .fillColor(COLORS.muted)
       .font('Helvetica')
       .fontSize(9)
-      .text(
-        `${COMPANY_NAME} — ${COMPANY_PHONE}`,
-        50,
-        y + 10,
-        { width: doc.page.width - 100, align: 'left' }
-      );
+      .text(`${COMPANY_NAME} — ${COMPANY_PHONE}`, 50, y + 10, {
+        width: doc.page.width - 100,
+        align: 'left',
+      });
 
     doc
       .fillColor(COLORS.muted)
       .font('Helvetica')
       .fontSize(9)
-      .text(
-        `ID: ${bookingId}`,
-        50,
-        y + 10,
-        { width: doc.page.width - 100, align: 'right' }
-      );
+      .text(`ID: ${bookingId}`, 50, y + 10, {
+        width: doc.page.width - 100,
+        align: 'right',
+      });
   }
 
   private sectionHeading(doc: PDFKit.PDFDocument, title: string, COLORS: any, y: number) {
     const left = 50;
     const right = doc.page.width - 50;
 
-    // diminuta pastilla azul
-    doc
-      .save()
-      .roundedRect(left, y - 2, 8, 8, 2)
-      .fill(COLORS.primary)
-      .restore();
+    doc.save().roundedRect(left, y - 2, 8, 8, 2).fill(COLORS.primary).restore();
 
-    doc
-      .fillColor(COLORS.primaryDark)
-      .font('Helvetica-Bold')
-      .fontSize(12)
-      .text(title, left + 14, y - 6);
+    doc.fillColor(COLORS.primaryDark).font('Helvetica-Bold').fontSize(12).text(title, left + 14, y - 6);
 
-    // línea de apoyo
     doc
       .moveTo(left, y + 16)
       .lineTo(right, y + 16)
@@ -410,39 +360,64 @@ export class PdfService {
     y: number,
     label: string,
     value: string,
-    COLORS: any
+    COLORS: any,
+    lineWidth = 260,
+    rowH = 22,
   ) {
-    const labelWidth = 90;
-    const lineHeight = 20;
+    const labelW = 80;
 
-    doc
-      .fillColor(COLORS.muted)
-      .font('Helvetica')
-      .fontSize(10)
-      .text(`${label}`, x, y, { width: labelWidth });
+    doc.fillColor(COLORS.muted).font('Helvetica').fontSize(10).text(label, x, y, { width: labelW });
 
-    doc
-      .fillColor(COLORS.text)
-      .font('Helvetica-Bold')
-      .fontSize(11)
-      .text(value, x + labelWidth + 8, y);
+    doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(11).text(value, x + labelW + 10, y, {
+      width: lineWidth - (labelW + 10),
+      continued: false,
+    });
 
-    // línea punteada sutil (opcional):
+    // Línea base sutil (punteada suave)
     doc
-      .moveTo(x, y + lineHeight - 4)
-      .lineTo(x + 260, y + lineHeight - 4)
+      .moveTo(x, y + rowH - 4)
+      .lineTo(x + lineWidth, y + rowH - 4)
       .dash(1, { space: 2 })
       .strokeColor('#eef2ff')
       .lineWidth(0.5)
       .stroke()
       .undash();
 
-    return y + lineHeight;
+    return y + rowH;
+  }
+
+  private drawCenteredWatermark(doc: PDFKit.PDFDocument, logoPath: string, opacity = 0.06) {
+    try {
+      // Caja segura para que JAMÁS se recorte
+      const padW = 160; // márgenes “de agua”
+      const padH = 240;
+      const maxW = doc.page.width - padW;
+      const maxH = doc.page.height - padH;
+
+      // Obtener dimensiones originales del logo
+      const img: any = (doc as any).openImage(logoPath);
+      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+      const w = img.width * scale;
+      const h = img.height * scale;
+
+      const x = (doc.page.width - w) / 2;
+      const y = (doc.page.height - h) / 2;
+
+      doc.save();
+      doc.opacity(opacity);
+      doc.image(logoPath, x, y, { width: w, height: h });
+      doc.restore();
+    } catch {
+      // si falla, simplemente no dibuja
+    }
+  }
+
+  private toTitle(s = '') {
+    return String(s || '').replace(/\s+/g, ' ').trim();
   }
 
   private makeBookingId(state: PdfState) {
     const base = `${state.clientData?.telefono || ''}|${state.appointmentDate}|${state.appointmentTime}|${Date.now()}`;
-    // Hash simple y corto base36
     let h = 0;
     for (let i = 0; i < base.length; i++) h = (h * 31 + base.charCodeAt(i)) >>> 0;
     return `RB-${h.toString(36).toUpperCase()}`;
