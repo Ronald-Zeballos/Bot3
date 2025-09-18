@@ -99,10 +99,9 @@ export class WhatsappService {
   }
 
   async sendListMessage(to: string, message: string, buttonText: string, sections: any[]) {
-    // Asegurar límite de 10 filas en total (WhatsApp)
+    // Limitar TOTAL a 10 filas (regla de WhatsApp)
     const totalRows = sections.reduce((acc: number, s: any) => acc + (s.rows?.length || 0), 0);
     if (totalRows > 10) {
-      // recorta manteniendo la primera sección
       const first = sections[0];
       first.rows = first.rows.slice(0, 10);
       sections = [first];
@@ -124,7 +123,7 @@ export class WhatsappService {
     }
   }
 
-  // (dejamos estas por si en el futuro vuelves a adjuntar)
+  // Mantengo estas por si vuelves a adjuntar más adelante en otros flujos
   async uploadMediaToWhatsApp(buffer: Buffer, filename: string, mime = 'application/pdf'): Promise<string> {
     const form = new FormData();
     (form as any).append('messaging_product', 'whatsapp');
@@ -138,6 +137,7 @@ export class WhatsappService {
     });
     return data.id as string;
   }
+
   async sendDocumentByMediaId(to: string, mediaId: string, filename: string, caption: string) {
     const body = { messaging_product: 'whatsapp', to, type: 'document', document: { id: mediaId, caption, filename } };
     const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS, timeout: 20000 });
@@ -185,6 +185,25 @@ export class WhatsappService {
     }
   }
 
+  /* ========== Validación de datos antes del PDF ========== */
+  private validateAppointmentData(f: { data: ClientData; serviceType: string; slots: SlotOffered[] }) {
+    const errors: string[] = [];
+    const nombreOk = !!(f.data?.nombre && f.data.nombre.trim().split(/\s+/).length >= 2);
+    const telOk = !!(f.data?.telefono && /^\d{7,12}$/.test(String(f.data.telefono)));
+    const fecha = f.slots?.[0]?.date;
+    const hora = f.slots?.[0]?.time;
+    const servicio = f.serviceType;
+
+    if (!servicio) errors.push('tipo de servicio');
+    if (!fecha) errors.push('fecha');
+    if (!hora) errors.push('hora');
+    if (!nombreOk) errors.push('nombre y apellido');
+    if (!telOk) errors.push('teléfono válido (7–12 dígitos)');
+    // email es opcional
+
+    return { ok: errors.length === 0, errors, fecha, hora, servicio };
+  }
+
   /* ========== Lógica principal ========== */
   async generarRespuesta(text: string, from: string, buttonId?: string): Promise<string> {
     let us = this.userStates.get(from) || { state: 'initial' };
@@ -200,34 +219,26 @@ export class WhatsappService {
     }
     if (cleanedText.includes('ayuda')) return this.getHelpMessage(us.state);
 
-    // Reintento manual para enviar link del PDF
+    // Reintento manual para mandar PDF (documento + link)
     if (/^enviar pdf$/i.test(cleanedText)) {
       try {
-        // Aquí deberías recuperar los datos de la última cita del usuario desde Sheets/DB
-        // Para el ejemplo, si hay formulario en memoria reciente, lo usamos:
         const st = this.userStates.get(from);
+        const f = this.forms.get(from);
         if (!st?.appointmentDate || !st?.appointmentTime || !st?.serviceType) {
           return 'No encontré tu última cita en memoria. Por favor escribe "hola" para iniciar o vuelve a agendar.';
         }
-        const f = this.forms.get(from);
         const clientData: ClientData = f?.data || { telefono: this.onlyDigits(from) };
+        const slots: SlotOffered[] = [{ date: st.appointmentDate!, time: st.appointmentTime!, row: -1, label: '' }];
 
-        const { buffer, filename } = await this.pdf.generateConfirmationPDFBuffer({
-          clientData,
-          serviceType: st.serviceType!,
-          appointmentDate: st.appointmentDate!,
-          appointmentTime: st.appointmentTime!,
-        });
+        const temp = { data: clientData, serviceType: st.serviceType!, slots };
+        const check = this.validateAppointmentData({ data: temp.data, serviceType: temp.serviceType, slots: temp.slots });
+        if (!check.ok) return `Me faltan datos para generar el comprobante: ${check.errors.join(', ')}.`;
 
-        if (!this.pdf.isS3Enabled()) {
-          return 'No puedo generar el link porque S3 no está configurado. Contacta a soporte.';
-        }
-        const url = await this.pdf.uploadToS3(buffer, filename, 'application/pdf');
-        await this.sendMessage(from, `🔗 *Tu comprobante en PDF:*\n${url}`);
+        await this.sendPdfDocAndLink(from, temp.data, temp.serviceType, slots[0].date, slots[0].time);
         return '';
       } catch (err: any) {
-        console.error('Reintento enviar PDF (link) error:', err?.response?.data || err);
-        return 'No pude generar el link del comprobante ahora. Intenta más tarde.';
+        console.error('Reintento enviar PDF error:', err?.response?.data || err);
+        return 'No pude enviar el comprobante ahora. Intenta más tarde.';
       }
     }
 
@@ -237,7 +248,7 @@ export class WhatsappService {
     switch (us.state) {
       case 'awaiting_service_type':         return this.handleServiceSelection(text, from);
       case 'awaiting_day_choice':           return 'Toca un *día* en la lista que te envié, por favor.';
-      case 'awaiting_time_choice':          return 'Elige una *hora* desde la lista enviada.';
+      case 'awaiting_time_choice':          return 'Elige la *hora* desde la lista enviada.';
       case 'awaiting_appointment_confirmation': return this.handleAppointmentConfirmation(text, from);
       default:                               return this.handleInitialMessage(text, from);
     }
@@ -330,7 +341,7 @@ export class WhatsappService {
       initial: 'Escribe "hola" para comenzar.',
       awaiting_service_type: 'Selecciona un servicio de la lista.',
       awaiting_day_choice: 'Elige un día (sólo próximos 7 días hábiles).',
-      awaiting_time_choice: 'Elige la hora disponible del día que seleccionaste.',
+      awaiting_time_choice: 'Elige la *hora* disponible del día que seleccionaste.',
     };
     return help[currentState] || 'Escribe "hola" para comenzar o "cancelar" para reiniciar.';
   }
@@ -338,7 +349,7 @@ export class WhatsappService {
   private async sendWelcomeButtons(to: string) {
     await this.sendButtons(
       to,
-      `👋 Bienvenido a *${COMPANY_NAME}*.\nAgenda en *2 minutos*: te mostramos *horarios reales* y recibes *link al PDF de confirmación*.`,
+      `👋 Bienvenido a *${COMPANY_NAME}*.\nAgenda en *2 minutos*: horarios *reales* y recibes *PDF + link* de confirmación.`,
       [
         { type: 'reply', reply: { id: 'servicios', title: '🧾 Ver servicios' } },
         { type: 'reply', reply: { id: 'agendar_cita', title: '📅 Agendar' } },
@@ -362,7 +373,7 @@ export class WhatsappService {
   }
 
   private async sendNext7Days(to: string): Promise<string> {
-    const days = await this.sheets.getNextWorkingDays(7);
+    const days = await this.sheets.getNextWorkingDays(7); // excluye domingos/feriados
     const rows = days.map((d) => ({ id: `day_${d}`, title: d }));
     const sections = [{ title: 'Próximos 7 días hábiles', rows }];
     await this.sendListMessage(to, 'Elige el *día* de tu cita:', 'Elegir día', sections);
@@ -455,12 +466,15 @@ export class WhatsappService {
     const autofilledPhone = this.onlyDigits(from);
     this.forms.set(from, { idx: 0, data: { telefono: autofilledPhone }, schema: this.FORM_APPT, serviceType, slots, autofilledPhone });
   }
+
   private async askNext(from: string) {
     const f = this.forms.get(from); if (!f) return;
     const field = f.schema[f.idx]; await this.sendMessage(from, field.prompt({ autofilledPhone: f.autofilledPhone }));
   }
+
   private async handleFormInput(from: string, text: string): Promise<string> {
-    const f = this.forms.get(from); if (!f) return '';
+    const f = this.forms.get(from);
+    if (!f) return '';
 
     const ntext = this.normalize(text);
     const field = f.schema[f.idx];
@@ -474,6 +488,27 @@ export class WhatsappService {
     f.idx++;
 
     if (f.idx >= f.schema.length) {
+      // Validación final ANTES de ofrecer confirmar
+      const check = this.validateAppointmentData({ data: f.data, serviceType: f.serviceType, slots: f.slots });
+      if (!check.ok) {
+        await this.sendMessage(from, `Me faltan datos para continuar: ${check.errors.join(', ')}.`);
+        // Regresar al primer campo faltante
+        const order: FieldKey[] = ['nombre', 'telefono', 'email'];
+        for (const k of order) {
+          if ((k === 'nombre' && check.errors.includes('nombre y apellido'))
+            || (k === 'telefono' && check.errors.includes('teléfono válido (7–12 dígitos)'))) {
+            f.idx = f.schema.findIndex(s => s.key === k);
+            if (f.idx >= 0) { await this.askNext(from); }
+            return '';
+          }
+        }
+        // Si el faltante es de fecha/hora/servicio (algo raro), reiniciar a selección de servicio
+        const st = this.userStates.get(from) || { state: 'initial' };
+        st.state = 'awaiting_service_type'; st.updatedAt = Date.now();
+        this.userStates.set(from, st);
+        return 'Volvamos a elegir el servicio para continuar.';
+      }
+
       const resumen =
         `📋 *Revisa tu solicitud:*\n\n` +
         `🧾 *Servicio:* ${f.serviceType}\n` +
@@ -499,6 +534,27 @@ export class WhatsappService {
     const st = this.userStates.get(from);
     if (!f || !st) return 'No tengo registro de tu solicitud. Escribe "hola" para comenzar.';
 
+    // Validación dura antes de guardar/generar
+    const check = this.validateAppointmentData({ data: f.data, serviceType: f.serviceType, slots: f.slots });
+    if (!check.ok) {
+      await this.sendMessage(from, `Me faltan datos para continuar: ${check.errors.join(', ')}.`);
+      // volver a capturar el primer campo faltante crítico
+      const order: FieldKey[] = ['nombre', 'telefono', 'email'];
+      for (const k of order) {
+        if ((k === 'nombre' && check.errors.includes('nombre y apellido'))
+          || (k === 'telefono' && check.errors.includes('teléfono válido (7–12 dígitos)'))) {
+          const idx = f.schema.findIndex(s => s.key === k);
+          if (idx >= 0) { f.idx = idx; await this.askNext(from); }
+          return '';
+        }
+      }
+      const ust = this.userStates.get(from) || { state: 'initial' };
+      ust.state = 'awaiting_service_type'; ust.updatedAt = Date.now();
+      this.userStates.set(from, ust);
+      return 'Volvamos a elegir el servicio para continuar.';
+    }
+
+    // Guarda en planilla
     try {
       await this.sheets.appendAppointmentRow({
         telefono: f.data.telefono!, nombre: f.data.nombre!, email: f.data.email || '',
@@ -510,43 +566,65 @@ export class WhatsappService {
       return 'Ocurrió un problema al guardar tu cita. Intenta nuevamente más tarde o llama al +591 65900645.';
     }
 
-    // Mensaje de confirmación básico
     await this.sendMessage(
       from,
       `✅ *¡Cita confirmada!*\n\nGracias por agendar con *${COMPANY_NAME}*.\n` +
-      `Te esperamos el ${f.slots[0].date} a las ${f.slots[0].time}.\n\n` +
-      `Ahora te enviaré el *link* a tu comprobante en PDF…`
+      `Te esperamos el ${f.slots[0].date} a las ${f.slots[0].time}.\n\nGenerando tu comprobante…`
     );
 
-    // Generar PDF y enviar LINK (no adjunto)
+    // Enviar PDF como DOCUMENTO y además Link (si S3)
     try {
-      const { buffer, filename } = await this.pdf.generateConfirmationPDFBuffer({
-        clientData: f.data, serviceType: f.serviceType, appointmentDate: f.slots[0].date, appointmentTime: f.slots[0].time,
-      });
-
-      // (Opcional) control de tamaño
-      if (buffer.length > 95 * 1024 * 1024) {
-        console.warn('PDF demasiado grande para servir cómodamente:', buffer.length);
-      }
-
-      if (!this.pdf.isS3Enabled()) {
-        console.error('S3 no configurado: no se puede publicar link.');
-        await this.sendMessage(from, 'Tu cita fue confirmada, pero no pude generar el link del comprobante (S3 no configurado).');
-      } else {
-        const url = await this.pdf.uploadToS3(buffer, filename, 'application/pdf');
-        await this.sendMessage(
-          from,
-          `🔗 *Descarga tu comprobante en PDF:*\n${url}\n\n` +
-          `Guárdalo o compártelo cuando quieras.`
-        );
-      }
+      await this.sendPdfDocAndLink(from, f.data, f.serviceType, f.slots[0].date, f.slots[0].time);
     } catch (err: any) {
-      console.error('Generación o subida de PDF (link) error:', err?.response?.data || err);
-      await this.sendMessage(from, 'Tu cita fue confirmada ✅, pero no pude generar el link del comprobante. Responde "enviar pdf" para reintentar.');
+      console.error('PDF total error:', err?.response?.data || err);
+      await this.sendMessage(from, 'Tu cita fue confirmada ✅, pero no pude enviar el comprobante. Responde "enviar pdf" para reintentarlo.');
     }
 
     this.forms.delete(from);
     this.userStates.set(from, { state: 'initial', updatedAt: Date.now() });
     return '¿Necesitas algo más? Escribe "hola" para volver al menú.';
+  }
+
+  /** Genera PDF una vez, intenta subir a S3 para link y subir a WhatsApp como documento. */
+  private async sendPdfDocAndLink(
+    to: string,
+    clientData: ClientData,
+    serviceType: string,
+    date: string,
+    time: string,
+  ) {
+    // 1) Generar
+    const { buffer, filename } = await this.pdf.generateConfirmationPDFBuffer({
+      clientData, serviceType, appointmentDate: date, appointmentTime: time,
+    });
+
+    let url: string | null = null;
+
+    // 2) Intentar link (si S3)
+    if (this.pdf.isS3Enabled()) {
+      try {
+        url = await this.pdf.uploadToS3(buffer, filename, 'application/pdf');
+      } catch (err: any) {
+        console.error('uploadToS3 error:', err?.response?.data || err);
+      }
+    }
+
+    // 3) Intentar documento por mediaId
+    let mediaOk = false;
+    try {
+      const mediaId = await this.uploadMediaToWhatsApp(buffer, filename, 'application/pdf');
+      await this.sendDocumentByMediaId(to, mediaId, filename, `Comprobante de cita - ${COMPANY_NAME}`);
+      mediaOk = true;
+    } catch (err: any) {
+      console.error('uploadMedia/sendDocument error:', err?.response?.data || err);
+    }
+
+    // 4) Si tenemos URL, mandarla SIEMPRE (complemento o fallback)
+    if (url) {
+      await this.sendMessage(to, `🔗 *Tu comprobante en PDF:*\n${url}`);
+    } else if (!mediaOk) {
+      // Si no hay media ni url:
+      await this.sendMessage(to, 'No pude adjuntar ni generar el link del comprobante. Responde "enviar pdf" para reintentar.');
+    }
   }
 }

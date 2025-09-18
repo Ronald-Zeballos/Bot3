@@ -47,7 +47,9 @@ export class PdfService {
      PDF ESTÉTICO Y ESTABLE (sin solapes, bien alineado)
      ===================================================== */
   async generateConfirmationPDFBuffer(state: PdfState): Promise<{ buffer: Buffer; filename: string }> {
-    const safeName = (state.clientData?.nombre || 'Cliente').replace(/\s+/g, '_');
+    const safeName = (state.clientData?.nombre || 'Cliente')
+      .replace(/\s+/g, '_')
+      .replace(/[^\w\-_.]/g, '');
     const filename = `cita_${safeName}_${Date.now()}.pdf`;
 
     // Paleta
@@ -287,13 +289,15 @@ export class PdfService {
   async uploadToS3(buffer: Buffer, filename: string, contentType = 'application/pdf'): Promise<string> {
     if (!this.s3) throw new Error('S3 no configurado.');
     const Bucket = process.env.AWS_S3_BUCKET!;
+
+    const useAcl = process.env.S3_USE_ACL === 'true';
     await this.s3.send(
       new PutObjectCommand({
         Bucket,
         Key: `citas/${filename}`,
         Body: buffer,
         ContentType: contentType,
-        ACL: 'public-read',
+        ...(useAcl ? { ACL: 'public-read' } : {}),
       }),
     );
     return `https://${Bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/citas/${filename}`;
@@ -303,50 +307,50 @@ export class PdfService {
      HELPERS VISUALES
      ========================= */
   private drawHeaderBand(doc: PDFKit.PDFDocument, COLORS: any) {
-    doc.save();
-    doc.rect(0, 0, doc.page.width, 42).fill(COLORS.primary);
-    doc.rect(0, 42, doc.page.width, 24).fill('#f5f8ff');
-    doc.restore();
+    (doc as any).save();
+    (doc as any).rect(0, 0, (doc as any).page.width, 42).fill(COLORS.primary);
+    (doc as any).rect(0, 42, (doc as any).page.width, 24).fill('#f5f8ff');
+    (doc as any).restore();
   }
 
   private drawFooter(doc: PDFKit.PDFDocument, COLORS: any, bookingId: string) {
-    const y = doc.page.height - 70;
+    const y = (doc as any).page.height - 70;
 
-    doc
+    (doc as any)
       .moveTo(50, y)
-      .lineTo(doc.page.width - 50, y)
+      .lineTo((doc as any).page.width - 50, y)
       .lineWidth(1)
       .strokeColor(COLORS.line)
       .stroke();
 
-    doc
+    (doc as any)
       .fillColor(COLORS.muted)
       .font('Helvetica')
       .fontSize(9)
       .text(`${COMPANY_NAME} — ${COMPANY_PHONE}`, 50, y + 10, {
-        width: doc.page.width - 100,
+        width: (doc as any).page.width - 100,
         align: 'left',
       });
 
-    doc
+    (doc as any)
       .fillColor(COLORS.muted)
       .font('Helvetica')
       .fontSize(9)
       .text(`ID: ${bookingId}`, 50, y + 10, {
-        width: doc.page.width - 100,
+        width: (doc as any).page.width - 100,
         align: 'right',
       });
   }
 
   private sectionHeading(doc: PDFKit.PDFDocument, title: string, COLORS: any, y: number) {
     const left = 50;
-    const right = doc.page.width - 50;
+    const right = (doc as any).page.width - 50;
 
-    doc.save().roundedRect(left, y - 2, 8, 8, 2).fill(COLORS.primary).restore();
+    (doc as any).save().roundedRect(left, y - 2, 8, 8, 2).fill(COLORS.primary).restore();
 
-    doc.fillColor(COLORS.primaryDark).font('Helvetica-Bold').fontSize(12).text(title, left + 14, y - 6);
+    (doc as any).fillColor(COLORS.primaryDark).font('Helvetica-Bold').fontSize(12).text(title, left + 14, y - 6);
 
-    doc
+    (doc as any)
       .moveTo(left, y + 16)
       .lineTo(right, y + 16)
       .lineWidth(1)
@@ -366,15 +370,15 @@ export class PdfService {
   ) {
     const labelW = 80;
 
-    doc.fillColor(COLORS.muted).font('Helvetica').fontSize(10).text(label, x, y, { width: labelW });
+    (doc as any).fillColor(COLORS.muted).font('Helvetica').fontSize(10).text(label, x, y, { width: labelW });
 
-    doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(11).text(value, x + labelW + 10, y, {
+    (doc as any).fillColor(COLORS.text).font('Helvetica-Bold').fontSize(11).text(value, x + labelW + 10, y, {
       width: lineWidth - (labelW + 10),
       continued: false,
     });
 
     // Línea base sutil (punteada suave)
-    doc
+    (doc as any)
       .moveTo(x, y + rowH - 4)
       .lineTo(x + lineWidth, y + rowH - 4)
       .dash(1, { space: 2 })
@@ -391,8 +395,8 @@ export class PdfService {
       // Caja segura para que JAMÁS se recorte
       const padW = 160; // márgenes “de agua”
       const padH = 240;
-      const maxW = doc.page.width - padW;
-      const maxH = doc.page.height - padH;
+      const maxW = (doc as any).page.width - padW;
+      const maxH = (doc as any).page.height - padH;
 
       // Obtener dimensiones originales del logo
       const img: any = (doc as any).openImage(logoPath);
@@ -400,13 +404,13 @@ export class PdfService {
       const w = img.width * scale;
       const h = img.height * scale;
 
-      const x = (doc.page.width - w) / 2;
-      const y = (doc.page.height - h) / 2;
+      const x = ((doc as any).page.width - w) / 2;
+      const y = ((doc as any).page.height - h) / 2;
 
-      doc.save();
-      doc.opacity(opacity);
-      doc.image(logoPath, x, y, { width: w, height: h });
-      doc.restore();
+      (doc as any).save();
+      (doc as any).opacity(opacity);
+      (doc as any).image(logoPath, x, y, { width: w, height: h });
+      (doc as any).restore();
     } catch {
       // si falla, simplemente no dibuja
     }
