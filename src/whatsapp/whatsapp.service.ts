@@ -1,3 +1,4 @@
+
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import * as FormData from 'form-data';
@@ -209,10 +210,9 @@ export class WhatsappService {
       case 'servicios':
         return this.handleServiceSelection('servicios', from);
 
-      // ⛔ Quitamos el salto directo a "agendar_cita" (primero se elige servicio)
-      // case 'agendar_cita':
-      //   this.userStates.set(from, { ...us, state: 'awaiting_service_type', updatedAt: Date.now() });
-      //   return this.sendServiceOptions(from);
+      case 'agendar_cita':
+        this.userStates.set(from, { ...us, state: 'awaiting_service_type', updatedAt: Date.now() });
+        return this.sendServiceOptions(from);
 
       case 'agendar_si':
         return this.handleAppointmentConfirmation('sí', from);
@@ -290,12 +290,12 @@ export class WhatsappService {
   }
 
   private async sendWelcomeButtons(to: string) {
-    // Quitamos el botón de "📅 Agendar" para forzar elegir servicio primero
     await this.sendButtons(
       to,
       `👋 Bienvenido a *${COMPANY_NAME}*.\nAgenda en *2 minutos*: te mostramos *horarios reales* y recibes *PDF de confirmación*.`,
       [
         { type: 'reply', reply: { id: 'servicios', title: '🧾 Ver servicios' } },
+        { type: 'reply', reply: { id: 'agendar_cita', title: '📅 Agendar' } },
       ]
     );
   }
@@ -355,10 +355,6 @@ export class WhatsappService {
       return this.sendNext7Days(from);
     }
 
-    // Guardar slots ofrecidos para lookup estable al seleccionar
-    st.lastOfferedSlots = slots;
-    this.userStates.set(from, st);
-
     // Construye lista de horas disponibles (cada fila lleva el número de fila real para reservar)
     const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
     const sections = [{ title: `Horarios para ${dayYMD}`, rows }];
@@ -376,10 +372,6 @@ export class WhatsappService {
       // Se ocupó: vuelve a listar horas del día (el “botón” desaparece al no ser listado)
       await this.sendMessage(from, 'Ese horario acaba de ocuparse 😕. Aquí tienes las *horas disponibles* actualizadas:');
       const slots = await this.sheets.getSlotsForDate(st.chosenDay);
-      // refrescar lista
-      st.lastOfferedSlots = slots;
-      this.userStates.set(from, st);
-
       if (!slots.length) return this.sendNext7Days(from);
       const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
       const sections = [{ title: `Horarios para ${st.chosenDay}`, rows }];
@@ -388,17 +380,8 @@ export class WhatsappService {
     }
 
     // Guarda selección y pasa a formulario
-    // 1) intentar desde los últimos slots ofrecidos
-    let chosen = st.lastOfferedSlots?.find((s) => s.row === row);
-    // 2) fallback: refrescar desde la planilla
-    if (!chosen) {
-      const rSlots = await this.sheets.getSlotsForDate(st.chosenDay);
-      chosen = rSlots.find((s) => s.row === row) || { row, date: st.chosenDay, time: '', label: '' };
-    }
-    // 3) si aún no hay hora por algún desfasaje, poner un placeholder seguro
-    if (!chosen.time) {
-      chosen.time = 'A confirmar';
-    }
+    const rSlots = await this.sheets.getSlotsForDate(st.chosenDay);
+    const chosen = rSlots.find((s) => s.row === row) || { row, date: st.chosenDay, time: '', label: '' };
 
     st.appointmentDate = st.chosenDay;
     st.appointmentTime = chosen.time;
@@ -450,40 +433,11 @@ export class WhatsappService {
     f.idx++;
 
     if (f.idx >= f.schema.length) {
-      // ANTES de mostrar el resumen, verificar que haya fecha/hora (usando fallback al estado)
-      const st = this.userStates.get(from);
-      const fecha = f.slots[0]?.date || st?.appointmentDate || st?.chosenDay || '';
-      const hora  = f.slots[0]?.time || st?.appointmentTime || '';
-
-      if (!fecha || !hora) {
-        // Si falta hora (o fecha), regresamos a elegir hora del mismo día
-        if (st?.chosenDay) {
-          await this.sendMessage(from, 'Necesito que elijas la *hora* de tu cita.');
-          const slots = await this.sheets.getSlotsForDate(st.chosenDay);
-          st.lastOfferedSlots = slots;
-          st.state = 'awaiting_time_choice';
-          st.currentStep = 2; st.updatedAt = Date.now();
-          this.userStates.set(from, st);
-
-          if (!slots.length) return this.sendNext7Days(from);
-          const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
-          const sections = [{ title: `Horarios para ${st.chosenDay}`, rows }];
-          await this.sendListMessage(from, `📅 *${st.chosenDay}* — elige una *hora* disponible:`, 'Elegir hora', sections);
-          return '';
-        }
-        // fallback extremo
-        await this.sendMessage(from, 'Volvamos a elegir el servicio para continuar.');
-        const ust = this.userStates.get(from) || { state: 'initial' };
-        ust.state = 'awaiting_service_type'; ust.updatedAt = Date.now();
-        this.userStates.set(from, ust);
-        return '';
-      }
-
       const resumen =
         `📋 *Revisa tu solicitud:*\n\n` +
         `🧾 *Servicio:* ${f.serviceType}\n` +
-        `📅 *Fecha:* ${fecha}\n` +
-        `🕒 *Hora:* ${hora}\n\n` +
+        `📅 *Fecha:* ${f.slots[0]?.date}\n` +
+        `🕒 *Hora:* ${f.slots[0]?.time}\n\n` +
         `👤 *Nombre:* ${f.data.nombre}\n` +
         `📞 *Teléfono:* ${f.data.telefono}\n` +
         `✉️ *Email:* ${f.data.email || '—'}\n\n` +
@@ -504,35 +458,11 @@ export class WhatsappService {
     const st = this.userStates.get(from);
     if (!f || !st) return 'No tengo registro de tu solicitud. Escribe "hola" para comenzar.';
 
-    // Derivar fecha/hora con fallback al estado
-    const fecha = f.slots[0]?.date || st.appointmentDate || st.chosenDay || '';
-    const hora  = f.slots[0]?.time || st.appointmentTime || '';
-
-    // Si falta HORA, volvemos a la selección de hora del mismo día (no reiniciamos todo)
-    if (!fecha || !hora) {
-      if (st.chosenDay) {
-        await this.sendMessage(from, 'Necesito que elijas la *hora* de tu cita.');
-        const slots = await this.sheets.getSlotsForDate(st.chosenDay);
-        st.lastOfferedSlots = slots;
-        st.state = 'awaiting_time_choice';
-        st.currentStep = 2; st.updatedAt = Date.now();
-        this.userStates.set(from, st);
-
-        if (!slots.length) return this.sendNext7Days(from);
-        const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
-        const sections = [{ title: `Horarios para ${st.chosenDay}`, rows }];
-        await this.sendListMessage(from, `📅 *${st.chosenDay}* — elige una *hora* disponible:`, 'Elegir hora', sections);
-        return '';
-      }
-      this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
-      return 'Volvamos a elegir el servicio para continuar.';
-    }
-
     try {
       await this.sheets.appendAppointmentRow({
         telefono: f.data.telefono!, nombre: f.data.nombre!, email: f.data.email || '',
         servicio: f.serviceType || 'Sin especificar',
-        fecha, hora, slotRow: f.slots[0]?.row ?? -1,
+        fecha: f.slots[0].date, hora: f.slots[0].time, slotRow: f.slots[0].row,
       });
     } catch {
       return 'Ocurrió un problema al guardar tu cita. Intenta nuevamente más tarde o llama al +591 65900645.';
@@ -540,12 +470,12 @@ export class WhatsappService {
 
     await this.sendMessage(from,
       `✅ *¡Cita confirmada!*\n\nGracias por agendar con *${COMPANY_NAME}*.\n` +
-      `Te esperamos el ${fecha} a las ${hora}.\n\nSi necesitas cancelar o reprogramar, contáctanos al +591 65900645.`
+      `Te esperamos el ${f.slots[0].date} a las ${f.slots[0].time}.\n\nSi necesitas cancelar o reprogramar, contáctanos al +591 65900645.`
     );
 
     try {
       const { buffer, filename } = await this.pdf.generateConfirmationPDFBuffer({
-        clientData: f.data, serviceType: f.serviceType, appointmentDate: fecha, appointmentTime: hora,
+        clientData: f.data, serviceType: f.serviceType, appointmentDate: f.slots[0].date, appointmentTime: f.slots[0].time,
       });
       let sentOk = false;
       if (this.pdf.isS3Enabled()) {

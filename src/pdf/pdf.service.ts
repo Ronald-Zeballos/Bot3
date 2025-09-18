@@ -6,21 +6,11 @@ import QRCode from 'qrcode';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 const COMPANY_NAME = 'Russell Bedford Bolivia Encinas Auditores y Consultores SRL';
-const COMPANY_PHONE = '+591 65900645';
-const COMPANY_MAPS_URL = 'https://maps.app.goo.gl/TU82fjJzHG3RBAbTA';
-const HOURS_TEXT = 'Horario de atención: 08:00–12:00 y 14:30–18:30 (Lun–Vie)';
 
 type ClientData = {
   nombre?: string;
   telefono?: string;
   email?: string;
-};
-
-type PdfState = {
-  clientData: ClientData;
-  serviceType: string;
-  appointmentDate: string; // YYYY-MM-DD
-  appointmentTime: string; // HH:mm
 };
 
 @Injectable()
@@ -43,387 +33,84 @@ export class PdfService {
     return !!this.s3;
   }
 
-  /* =====================================================
-     PDF ESTÉTICO Y ESTABLE (sin solapes, bien alineado)
-     ===================================================== */
-  async generateConfirmationPDFBuffer(state: PdfState): Promise<{ buffer: Buffer; filename: string }> {
-    const safeName = (state.clientData?.nombre || 'Cliente')
-      .replace(/\s+/g, '_')
-      .replace(/[^\w\-_.]/g, '');
+  async generateConfirmationPDFBuffer(state: {
+    clientData: ClientData;
+    serviceType: string;
+    appointmentDate: string;
+    appointmentTime: string;
+  }): Promise<{ buffer: Buffer; filename: string }> {
+    const safeName = (state.clientData?.nombre || 'Cliente').replace(/\s+/g, '_');
     const filename = `cita_${safeName}_${Date.now()}.pdf`;
 
-    // Paleta
-    const COLORS = {
-      primary: '#0b57d0',
-      primaryDark: '#0a45a7',
-      text: '#1f2937',
-      muted: '#6b7280',
-      line: '#e5ecff',
-      cardBorder: '#d6e2ff',
-      badgeBg: '#e9f0ff',
-      badgeText: '#0a45a7',
-    };
-
-    // Fecha/hora actual (La Paz)
-    const nowStr = new Intl.DateTimeFormat('es-BO', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-      timeZone: 'America/La_Paz',
-    }).format(new Date());
-
-    const bookingId = this.makeBookingId(state);
-
-    // ------ Prepara QR (SIN dibujar nada aún)
-    const qrPayload = {
-      empresa: COMPANY_NAME,
-      nombre: state.clientData?.nombre || '',
-      telefono: state.clientData?.telefono || '',
-      email: state.clientData?.email || '',
-      fecha: state.appointmentDate,
-      hora: state.appointmentTime,
-      servicio: state.serviceType,
-      ubicacion: COMPANY_MAPS_URL,
-      id_reserva: bookingId,
-      generado: nowStr,
-    };
-    const qrBuffer = await QRCode.toBuffer(JSON.stringify(qrPayload), {
-      type: 'png',
-      errorCorrectionLevel: 'M',
-      margin: 1,
-      scale: 6,
-    });
-
-    // Ruta del logo (varios fallbacks)
-    const logoCandidates = [
-      process.env.LOGO_PATH,
-      path.resolve(process.cwd(), 'Bot3', 'public', 'logo-russel.png'),
-      path.resolve(process.cwd(), 'public', 'logo-russel.png'),
-      path.resolve(__dirname, '..', 'assets', 'logo.png'),
-      path.resolve(__dirname, '..', '..', 'public', 'logo-russel.png'),
-    ].filter(Boolean) as string[];
-    const logoPath = logoCandidates.find((p) => {
-      try {
-        return fs.existsSync(p);
-      } catch {
-        return false;
-      }
-    });
-
     return await new Promise((resolve, reject) => {
-      const doc = new (PDFDocument as any)({ margin: 48, size: 'A4', bufferPages: true });
+      const doc = new (PDFDocument as any)({ margin: 40 });
       const chunks: Buffer[] = [];
 
       doc.on('data', (c: Buffer) => chunks.push(c));
       doc.on('end', () => resolve({ buffer: Buffer.concat(chunks), filename }));
       doc.on('error', reject);
 
-      // =============== LAYOUT BASE ===============
-      const PAGE = {
-        left: 50,
-        right: doc.page.width - 50,
-        top: 40,
-        bottom: doc.page.height - 50,
-        width: doc.page.width,
-        height: doc.page.height,
-      };
+      try {
+        const logoPath = path.join(__dirname, '..', 'assets', 'logo.png');
+        if (fs.existsSync(logoPath)) doc.image(logoPath, { width: 120 });
+      } catch {}
 
-      // Banda superior + barra secundaria
-      this.drawHeaderBand(doc, COLORS);
+      doc.moveDown(1);
+      doc.fontSize(18).text(COMPANY_NAME, { align: 'center', underline: true });
+      doc.moveDown(0.2);
+      doc.fontSize(16).text('Confirmación de Cita', { align: 'center' });
+      doc.moveDown(1);
 
-      // Marca de agua (logo grande centrado, sin recortes)
-      if (logoPath) this.drawCenteredWatermark(doc, logoPath, 0.06);
+      doc.fontSize(12);
+      doc.text(`Nombre: ${state.clientData?.nombre || ''}`);
+      doc.text(`Teléfono: ${state.clientData?.telefono || ''}`);
+      doc.text(`Email: ${state.clientData?.email || ''}`);
+      doc.moveDown(0.5);
+      doc.text(`Servicio: ${state.serviceType || ''}`);
+      doc.text(`Fecha: ${state.appointmentDate || ''}`);
+      doc.text(`Hora: ${state.appointmentTime || ''}`);
+      doc.moveDown(1);
 
-      // Logo pequeño arriba-izquierda
-      if (logoPath) {
+      (async () => {
         try {
-          doc.image(logoPath, PAGE.left, 46, { width: 84 });
+          const qrText = JSON.stringify({
+            empresa: COMPANY_NAME,
+            nombre: state.clientData?.nombre,
+            telefono: state.clientData?.telefono,
+            email: state.clientData?.email,
+            fecha: state.appointmentDate,
+            hora: state.appointmentTime,
+            servicio: state.serviceType,
+          });
+          const qrBuffer = await QRCode.toBuffer(qrText, { type: 'png', errorCorrectionLevel: 'M' });
+          doc.image(qrBuffer, doc.page.width - 150, doc.y, { width: 100 });
         } catch {}
-      }
+        doc.moveDown(3);
 
-      // Títulos a la derecha
-      doc
-        .fillColor(COLORS.primaryDark)
-        .font('Helvetica-Bold')
-        .fontSize(22)
-        .text('Comprobante de Cita', PAGE.left, 50, { align: 'right' });
-      doc
-        .fillColor(COLORS.text)
-        .font('Helvetica')
-        .fontSize(11)
-        .text(COMPANY_NAME, { align: 'right' });
+        doc.text('Por favor:', { underline: true });
+        doc.text('• Presentarse 5 minutos antes de la cita');
+        doc.text('• Traer documentación relevante');
+        doc.text('• Contactarnos al +591 65900645 en caso de inconvenientes');
+        doc.moveDown(1);
 
-      // Línea base
-      doc
-        .moveTo(PAGE.left, 102)
-        .lineTo(PAGE.right, 102)
-        .lineWidth(1)
-        .strokeColor(COLORS.line)
-        .stroke();
-
-      // Badge con ID
-      const badge = { w: 190, h: 26, x: PAGE.right - 190, y: 112, r: 8 };
-      doc
-        .roundedRect(badge.x, badge.y, badge.w, badge.h, badge.r)
-        .fillAndStroke(COLORS.badgeBg, COLORS.line);
-      doc
-        .fillColor(COLORS.badgeText)
-        .font('Helvetica-Bold')
-        .fontSize(10)
-        .text(`ID de reserva: ${bookingId}`, badge.x, badge.y + 7, { width: badge.w, align: 'center' });
-
-      // =============== TARJETA DE DATOS ===============
-      const card = { x: PAGE.left, y: 150, w: PAGE.right - PAGE.left, h: 230, r: 14 };
-      doc
-        .roundedRect(card.x, card.y, card.w, card.h, card.r)
-        .lineWidth(1)
-        .fill('#ffffff')
-        .strokeColor(COLORS.cardBorder)
-        .stroke();
-
-      // Barra de acento
-      doc.save().rect(card.x, card.y, 6, card.h).fill(COLORS.primary).restore();
-
-      const inner = { x: card.x + 20, y: card.y + 18, w: card.w - 40 };
-
-      // Título de sección + subtexto
-      doc
-        .fillColor(COLORS.primaryDark)
-        .font('Helvetica-Bold')
-        .fontSize(14)
-        .text('Detalles de la cita', inner.x, inner.y);
-      doc
-        .fillColor(COLORS.muted)
-        .font('Helvetica')
-        .fontSize(10)
-        .text(`Generado: ${nowStr} (America/La_Paz)`);
-
-      // Separador
-      const sepY = inner.y + 32;
-      doc
-        .moveTo(inner.x, sepY)
-        .lineTo(inner.x + inner.w, sepY)
-        .lineWidth(1)
-        .strokeColor(COLORS.line)
-        .stroke();
-
-      // Rejilla 3 columnas: izq/centro/QR (anchos consistentes)
-      const col = {
-        left: inner.x,
-        center: inner.x + 210,
-        rightBox: inner.x + inner.w - 140,
-        y: sepY + 16,
-        lineW: 260,
-        rowH: 22,
-      };
-
-      // Columna izquierda (cliente)
-      let y = col.y;
-      y = this.infoRow(doc, col.left, y, 'Nombre', this.toTitle(state.clientData?.nombre || '—'), COLORS, col.lineW, col.rowH);
-      y = this.infoRow(doc, col.left, y, 'Teléfono', state.clientData?.telefono || '—', COLORS, col.lineW, col.rowH);
-      y = this.infoRow(doc, col.left, y, 'Email', state.clientData?.email || '—', COLORS, col.lineW, col.rowH);
-
-      // Columna centro (cita)
-      y = col.y;
-      y = this.infoRow(doc, col.center, y, 'Servicio', this.toTitle(state.serviceType || '—'), COLORS, col.lineW, col.rowH);
-      y = this.infoRow(doc, col.center, y, 'Fecha', state.appointmentDate || '—', COLORS, col.lineW, col.rowH);
-      y = this.infoRow(doc, col.center, y, 'Hora', state.appointmentTime || '—', COLORS, col.lineW, col.rowH);
-
-      // Caja de QR a la derecha
-      const qrBox = { x: col.rightBox, y: col.y - 6, size: 140, r: 10 };
-      doc
-        .roundedRect(qrBox.x, qrBox.y, qrBox.size, qrBox.size, qrBox.r)
-        .strokeColor(COLORS.line)
-        .lineWidth(1)
-        .stroke();
-      const inset = 10;
-      doc.image(qrBuffer, qrBox.x + inset, qrBox.y + inset, { width: qrBox.size - inset * 2 });
-
-      // =============== UBICACIÓN / HORARIOS / RECOMENDACIONES ===============
-      const sectionStartY = card.y + card.h + 24;
-
-      // Ubicación
-      this.sectionHeading(doc, 'Ubicación', COLORS, sectionStartY);
-      doc
-        .fillColor(COLORS.text)
-        .font('Helvetica')
-        .fontSize(11)
-        .text('Russell Bedford Bolivia – Encinas Auditores y Consultores SRL', PAGE.left, sectionStartY + 18, {
-          width: PAGE.right - PAGE.left,
-        });
-      doc
-        .fillColor(COLORS.primaryDark)
-        .font('Helvetica-Bold')
-        .text(COMPANY_MAPS_URL, { link: COMPANY_MAPS_URL, underline: true });
-
-      // Horarios
-      const horariosY = sectionStartY + 58;
-      this.sectionHeading(doc, 'Atención', COLORS, horariosY);
-      doc
-        .fillColor(COLORS.text)
-        .font('Helvetica')
-        .fontSize(11)
-        .text(HOURS_TEXT, PAGE.left, horariosY + 18);
-
-      // Recomendaciones
-      const notesY = horariosY + 56;
-      this.sectionHeading(doc, 'Recomendaciones', COLORS, notesY);
-      doc
-        .fillColor(COLORS.text)
-        .font('Helvetica')
-        .fontSize(11)
-        .text('• Preséntate 5 minutos antes de la cita.', PAGE.left, notesY + 18)
-        .text('• Trae tu documentación o información relevante.')
-        .text(`• Si necesitas reprogramar o cancelar, contáctanos: ${COMPANY_PHONE}.`);
-
-      // Footer
-      this.drawFooter(doc, COLORS, bookingId);
-
-      // FIN
-      doc.end();
+        doc.text(`ID de reserva: ${Date.now()}`, { oblique: true });
+        doc.end();
+      })();
     });
   }
 
-  /* =========================
-     SUBIDA A S3 (opcional)
-     ========================= */
   async uploadToS3(buffer: Buffer, filename: string, contentType = 'application/pdf'): Promise<string> {
     if (!this.s3) throw new Error('S3 no configurado.');
     const Bucket = process.env.AWS_S3_BUCKET!;
-
-    const useAcl = process.env.S3_USE_ACL === 'true';
     await this.s3.send(
       new PutObjectCommand({
         Bucket,
         Key: `citas/${filename}`,
         Body: buffer,
         ContentType: contentType,
-        ...(useAcl ? { ACL: 'public-read' } : {}),
-      }),
+        ACL: 'public-read',
+      })
     );
     return `https://${Bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/citas/${filename}`;
-  }
-
-  /* =========================
-     HELPERS VISUALES
-     ========================= */
-  private drawHeaderBand(doc: PDFKit.PDFDocument, COLORS: any) {
-    (doc as any).save();
-    (doc as any).rect(0, 0, (doc as any).page.width, 42).fill(COLORS.primary);
-    (doc as any).rect(0, 42, (doc as any).page.width, 24).fill('#f5f8ff');
-    (doc as any).restore();
-  }
-
-  private drawFooter(doc: PDFKit.PDFDocument, COLORS: any, bookingId: string) {
-    const y = (doc as any).page.height - 70;
-
-    (doc as any)
-      .moveTo(50, y)
-      .lineTo((doc as any).page.width - 50, y)
-      .lineWidth(1)
-      .strokeColor(COLORS.line)
-      .stroke();
-
-    (doc as any)
-      .fillColor(COLORS.muted)
-      .font('Helvetica')
-      .fontSize(9)
-      .text(`${COMPANY_NAME} — ${COMPANY_PHONE}`, 50, y + 10, {
-        width: (doc as any).page.width - 100,
-        align: 'left',
-      });
-
-    (doc as any)
-      .fillColor(COLORS.muted)
-      .font('Helvetica')
-      .fontSize(9)
-      .text(`ID: ${bookingId}`, 50, y + 10, {
-        width: (doc as any).page.width - 100,
-        align: 'right',
-      });
-  }
-
-  private sectionHeading(doc: PDFKit.PDFDocument, title: string, COLORS: any, y: number) {
-    const left = 50;
-    const right = (doc as any).page.width - 50;
-
-    (doc as any).save().roundedRect(left, y - 2, 8, 8, 2).fill(COLORS.primary).restore();
-
-    (doc as any).fillColor(COLORS.primaryDark).font('Helvetica-Bold').fontSize(12).text(title, left + 14, y - 6);
-
-    (doc as any)
-      .moveTo(left, y + 16)
-      .lineTo(right, y + 16)
-      .lineWidth(1)
-      .strokeColor(COLORS.line)
-      .stroke();
-  }
-
-  private infoRow(
-    doc: PDFKit.PDFDocument,
-    x: number,
-    y: number,
-    label: string,
-    value: string,
-    COLORS: any,
-    lineWidth = 260,
-    rowH = 22,
-  ) {
-    const labelW = 80;
-
-    (doc as any).fillColor(COLORS.muted).font('Helvetica').fontSize(10).text(label, x, y, { width: labelW });
-
-    (doc as any).fillColor(COLORS.text).font('Helvetica-Bold').fontSize(11).text(value, x + labelW + 10, y, {
-      width: lineWidth - (labelW + 10),
-      continued: false,
-    });
-
-    // Línea base sutil (punteada suave)
-    (doc as any)
-      .moveTo(x, y + rowH - 4)
-      .lineTo(x + lineWidth, y + rowH - 4)
-      .dash(1, { space: 2 })
-      .strokeColor('#eef2ff')
-      .lineWidth(0.5)
-      .stroke()
-      .undash();
-
-    return y + rowH;
-  }
-
-  private drawCenteredWatermark(doc: PDFKit.PDFDocument, logoPath: string, opacity = 0.06) {
-    try {
-      // Caja segura para que JAMÁS se recorte
-      const padW = 160; // márgenes “de agua”
-      const padH = 240;
-      const maxW = (doc as any).page.width - padW;
-      const maxH = (doc as any).page.height - padH;
-
-      // Obtener dimensiones originales del logo
-      const img: any = (doc as any).openImage(logoPath);
-      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
-      const w = img.width * scale;
-      const h = img.height * scale;
-
-      const x = ((doc as any).page.width - w) / 2;
-      const y = ((doc as any).page.height - h) / 2;
-
-      (doc as any).save();
-      (doc as any).opacity(opacity);
-      (doc as any).image(logoPath, x, y, { width: w, height: h });
-      (doc as any).restore();
-    } catch {
-      // si falla, simplemente no dibuja
-    }
-  }
-
-  private toTitle(s = '') {
-    return String(s || '').replace(/\s+/g, ' ').trim();
-  }
-
-  private makeBookingId(state: PdfState) {
-    const base = `${state.clientData?.telefono || ''}|${state.appointmentDate}|${state.appointmentTime}|${Date.now()}`;
-    let h = 0;
-    for (let i = 0; i < base.length; i++) h = (h * 31 + base.charCodeAt(i)) >>> 0;
-    return `RB-${h.toString(36).toUpperCase()}`;
   }
 }
