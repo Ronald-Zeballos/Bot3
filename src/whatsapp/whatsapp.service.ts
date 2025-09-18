@@ -1,4 +1,3 @@
-
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import * as FormData from 'form-data';
@@ -15,8 +14,8 @@ type UserState = {
   chosenDay?: string;
   appointmentDate?: string;
   appointmentTime?: string;
-  clientData?: ClientData;
   lastOfferedSlots?: SlotOffered[];
+  slotsPage?: number;
   updatedAt?: number;
   currentStep?: number;
   totalSteps?: number;
@@ -53,28 +52,45 @@ export class WhatsappService {
     { idx: number; data: ClientData; schema: FormField[]; serviceType: string; slots: SlotOffered[]; autofilledPhone: string }
   >();
 
+  // === FORM: Email ahora es OBLIGATORIO, y se mejora validación de nombre/teléfono ===
   private readonly FORM_APPT: FormField[] = [
     {
       key: 'nombre',
       prompt: () => '🧍‍♀️ *Paso 1/3*: ¿Cuál es tu *nombre y apellido*?',
       validate: (v) => {
-        const parts = String(v || '').trim().split(/\s+/);
-        return (parts.length >= 2 && parts.every((p) => p.length >= 2)) || 'Escribe nombre y apellido (ej. María González).';
+        const val = String(v || '').trim();
+        // Solo letras (con acentos) y espacios, mínimo dos palabras de 2+ letras
+        if (!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+$/.test(val)) return 'Usa solo letras y espacios (ej. María González).';
+        const parts = val.split(/\s+/).filter(Boolean);
+        if (parts.length < 2 || parts.some(p => p.length < 2)) return 'Escribe nombre y apellido (ej. María González).';
+        return true;
       },
     },
     {
       key: 'telefono',
       prompt: (ctx) =>
-        `📞 *Paso 2/3*: ¿Confirmas este *número* para contactarte: *${ctx.autofilledPhone}*?\n\nResponde con:\n• *sí* para usarlo\n• O escribe otro número (7–12 dígitos)`,
-      validate: (v) => /^\d{7,12}$/.test(String(v || '').replace(/[^\d]/g, '')) || 'Número inválido, usa 7–12 dígitos (ej. 65900645).',
-      normalize: (v) => String(v || '').replace(/[^\d]/g, ''),
+        `📞 *Paso 2/3*: ¿Confirmas este *número* para contactarte: *${ctx.autofilledPhone}*?\n\nResponde con:\n• *sí* para usarlo\n• O escribe otro número (8 dígitos; se admite +591)`,
+      validate: (v) => {
+        const digits = String(v || '').replace(/[^\d]/g, '');
+        const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
+        if (!/^\d{8}$/.test(normalized)) return 'Número inválido. Usa 8 dígitos (ej. 65900645).';
+        return true;
+      },
+      normalize: (v) => {
+        const digits = String(v || '').replace(/[^\d]/g, '');
+        const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
+        return normalized;
+      },
     },
     {
       key: 'email',
-      prompt: () => '✉️ *Paso 3/3*: ¿Cuál es tu *email* para enviarte la confirmación?\n\nSi no tienes, escribe *omitir*.',
-      validate: (v) => v === 'omitir' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim()) || 'Email inválido (ej. nombre@ejemplo.com).',
-      optional: true,
-      normalize: (v) => (v === 'omitir' ? '' : String(v || '').trim()),
+      prompt: () => '✉️ *Paso 3/3*: ¿Cuál es tu *email* para enviarte la confirmación?',
+      validate: (v) => {
+        const val = String(v || '').trim().toLowerCase();
+        // Regex sólida pero razonable (no RFC completa)
+        return /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(val) || 'Email inválido (ej. nombre@ejemplo.com).';
+      },
+      normalize: (v) => String(v || '').trim().toLowerCase(),
     },
   ];
 
@@ -100,13 +116,14 @@ export class WhatsappService {
   }
 
   async sendListMessage(to: string, message: string, buttonText: string, sections: any[]) {
+    // WhatsApp Cloud API: máx 10 filas total (no solo por sección). Paginamos externamente.
     const body = { messaging_product: 'whatsapp', to, type: 'interactive',
       interactive: { type: 'list', header: { type: 'text', text: 'Selecciona una opción' },
         body: { text: message }, action: { button: buttonText, sections } } };
     try {
       const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
       return data;
-    } catch {
+    } catch (e: any) {
       // fallback → 3 primeros como botones
       const simpleButtons = sections.flatMap((s) => s.rows.map((r: any) => ({ type: 'reply', reply: { id: r.id, title: r.title } }))).slice(0, 3);
       return this.sendButtons(to, message, simpleButtons);
@@ -169,6 +186,37 @@ export class WhatsappService {
     }
   }
 
+  /* ========== Paginación de horarios (máx 10 filas totales por mensaje) ========== */
+  private buildSlotPages(slots: SlotOffered[], pageSize = 9): SlotOffered[][] {
+    const pages: SlotOffered[][] = [];
+    for (let i = 0; i < slots.length; i += pageSize) pages.push(slots.slice(i, i + pageSize));
+    return pages;
+  }
+
+  private async sendSlotsPaged(to: string, dayYMD: string, slots: SlotOffered[], pageIdx = 0) {
+    const pages = this.buildSlotPages(slots, 9); // 9 filas + 1 "Siguiente"
+    const safePage = Math.max(0, Math.min(pageIdx, pages.length - 1));
+    const page = pages[safePage] || [];
+
+    const rows = page.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
+    if (pages.length > 1 && safePage < pages.length - 1) {
+      rows.push({ id: `more_${safePage + 1}`, title: 'Siguiente ▷' });
+    }
+    if (pages.length > 1 && safePage > 0) {
+      // opcional: permitir volver atrás añadiendo “◁ Anterior” (usa una fila)
+      rows.unshift({ id: `more_${safePage - 1}`, title: '◁ Anterior' });
+      // nos mantenemos <=10 filas: si agregamos “Anterior”, quitamos el último horario si hace falta
+      if (rows.length > 10) rows.splice(rows.length - 2, 1);
+    }
+
+    await this.sendListMessage(
+      to,
+      `📅 *${dayYMD}* — elige una *hora* disponible:${pages.length > 1 ? `\n(Página ${safePage + 1}/${pages.length})` : ''}`,
+      'Elegir hora',
+      [{ title: `Horarios para ${dayYMD}`, rows }]
+    );
+  }
+
   /* ========== Lógica principal ========== */
   async generarRespuesta(text: string, from: string, buttonId?: string): Promise<string> {
     let us = this.userStates.get(from) || { state: 'initial' };
@@ -189,7 +237,7 @@ export class WhatsappService {
 
     switch (us.state) {
       case 'awaiting_service_type':         return this.handleServiceSelection(text, from);
-      case 'awaiting_day_choice':           return 'Toca un *día* en la lista que te envié, por favor.';
+      case 'awaiting_day_choice':           return 'Selecciona un *día* desde la lista que te envié.';
       case 'awaiting_time_choice':          return 'Elige una *hora* desde la lista enviada.';
       case 'awaiting_appointment_confirmation': return this.handleAppointmentConfirmation(text, from);
       default:                               return this.handleInitialMessage(text, from);
@@ -197,7 +245,6 @@ export class WhatsappService {
   }
 
   private async handleButtonAction(buttonId: string, from: string, us: UserState): Promise<string> {
-    // List replies también llegan aquí (ids propios)
     if (buttonId.startsWith('day_')) {
       return this.handleDaySelected(buttonId.substring(4), from);
     }
@@ -205,13 +252,25 @@ export class WhatsappService {
       const row = parseInt(buttonId.substring(5), 10);
       return this.handleSlotRowSelected(row, from);
     }
+    if (buttonId.startsWith('more_')) {
+      // Navegación de páginas de horarios
+      const idx = parseInt(buttonId.substring(5), 10) || 0;
+      const st = this.userStates.get(from);
+      if (!st?.chosenDay || !st.lastOfferedSlots?.length) return 'Primero elige un *día* de la lista.';
+      st.slotsPage = idx;
+      this.userStates.set(from, st);
+      await this.sendSlotsPaged(from, st.chosenDay, st.lastOfferedSlots, idx);
+      return '';
+    }
 
     switch (buttonId) {
       case 'servicios':
         return this.handleServiceSelection('servicios', from);
 
+      // 🚫 Bloqueo de “Agendar” directo: se exige elegir servicio primero
       case 'agendar_cita':
         this.userStates.set(from, { ...us, state: 'awaiting_service_type', updatedAt: Date.now() });
+        await this.sendMessage(from, 'Para agendar, primero elige el *tipo de servicio*.');
         return this.sendServiceOptions(from);
 
       case 'agendar_si':
@@ -289,13 +348,13 @@ export class WhatsappService {
     return help[currentState] || 'Escribe "hola" para comenzar o "cancelar" para reiniciar.';
   }
 
+  // 🔒 Quita el botón de “Agendar” directo. Solo se muestra “Ver servicios”.
   private async sendWelcomeButtons(to: string) {
     await this.sendButtons(
       to,
-      `👋 Bienvenido a *${COMPANY_NAME}*.\nAgenda en *2 minutos*: te mostramos *horarios reales* y recibes *PDF de confirmación*.`,
+      `👋 Bienvenido a *${COMPANY_NAME}*.\nPara agendar, primero elige el *tipo de servicio*.`,
       [
         { type: 'reply', reply: { id: 'servicios', title: '🧾 Ver servicios' } },
-        { type: 'reply', reply: { id: 'agendar_cita', title: '📅 Agendar' } },
       ]
     );
   }
@@ -355,10 +414,12 @@ export class WhatsappService {
       return this.sendNext7Days(from);
     }
 
-    // Construye lista de horas disponibles (cada fila lleva el número de fila real para reservar)
-    const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
-    const sections = [{ title: `Horarios para ${dayYMD}`, rows }];
-    await this.sendListMessage(from, `📅 *${dayYMD}* — elige una *hora* disponible:`, 'Elegir hora', sections);
+    // Guardamos horarios y mostramos primera página (lista, no botones)
+    st.lastOfferedSlots = slots;
+    st.slotsPage = 0;
+    this.userStates.set(from, st);
+
+    await this.sendSlotsPaged(from, dayYMD, slots, 0);
     return '';
   }
 
@@ -369,13 +430,11 @@ export class WhatsappService {
     // Verifica de nuevo disponibilidad y reserva atómica (con servicio)
     const ok = await this.sheets.reserveSlotRow(row, from, st.serviceType || '').catch(() => false);
     if (!ok) {
-      // Se ocupó: vuelve a listar horas del día (el “botón” desaparece al no ser listado)
       await this.sendMessage(from, 'Ese horario acaba de ocuparse 😕. Aquí tienes las *horas disponibles* actualizadas:');
       const slots = await this.sheets.getSlotsForDate(st.chosenDay);
       if (!slots.length) return this.sendNext7Days(from);
-      const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
-      const sections = [{ title: `Horarios para ${st.chosenDay}`, rows }];
-      await this.sendListMessage(from, `📅 *${st.chosenDay}* — elige una *hora* disponible:`, 'Elegir hora', sections);
+      st.lastOfferedSlots = slots; st.slotsPage = 0; this.userStates.set(from, st);
+      await this.sendSlotsPaged(from, st.chosenDay, slots, 0);
       return '';
     }
 
@@ -411,8 +470,9 @@ export class WhatsappService {
 
   /* ========== Form Engine ========== */
   private startForm(from: string, serviceType: string, slots: SlotOffered[]) {
-    const autofilledPhone = this.onlyDigits(from);
-    this.forms.set(from, { idx: 0, data: { telefono: autofilledPhone }, schema: this.FORM_APPT, serviceType, slots, autofilledPhone });
+    const digits = this.onlyDigits(from);
+    const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
+    this.forms.set(from, { idx: 0, data: { telefono: normalized }, schema: this.FORM_APPT, serviceType, slots, autofilledPhone: normalized });
   }
   private async askNext(from: string) {
     const f = this.forms.get(from); if (!f) return;
@@ -424,7 +484,7 @@ export class WhatsappService {
     const ntext = this.normalize(text);
     const field = f.schema[f.idx];
     let value = field.normalize ? field.normalize(text) : text;
-    if (field.key === 'telefono' && ['si', 'sí', 'ok', 'confirmo'].includes(ntext)) value = f.autofilledPhone;
+    if (field.key == 'telefono' && ['si', 'sí', 'ok', 'confirmo'].includes(ntext)) value = f.autofilledPhone;
 
     const valid = field.validate(value);
     if (valid !== true) return String(valid);
@@ -440,7 +500,7 @@ export class WhatsappService {
         `🕒 *Hora:* ${f.slots[0]?.time}\n\n` +
         `👤 *Nombre:* ${f.data.nombre}\n` +
         `📞 *Teléfono:* ${f.data.telefono}\n` +
-        `✉️ *Email:* ${f.data.email || '—'}\n\n` +
+        `✉️ *Email:* ${f.data.email}\n\n` +
         `¿Confirmas para guardar en agenda?`;
       await this.sendButtons(from, resumen, [
         { type: 'reply', reply: { id: 'confirm_yes', title: '✅ Confirmar' } },
@@ -460,7 +520,7 @@ export class WhatsappService {
 
     try {
       await this.sheets.appendAppointmentRow({
-        telefono: f.data.telefono!, nombre: f.data.nombre!, email: f.data.email || '',
+        telefono: f.data.telefono!, nombre: f.data.nombre!, email: f.data.email!,
         servicio: f.serviceType || 'Sin especificar',
         fecha: f.slots[0].date, hora: f.slots[0].time, slotRow: f.slots[0].row,
       });
