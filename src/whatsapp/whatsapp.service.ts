@@ -71,12 +71,9 @@ export class WhatsappService {
     {
       key: 'email',
       prompt: () => '✉️ *Paso 3/3*: ¿Cuál es tu *email* para enviarte la confirmación?\n\nSi no tienes, escribe *omitir*.',
-      validate: (v) =>
-        v === 'omitir' ||
-        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim()) ||
-        'Email inválido (ej. nombre@ejemplo.com).',
+      validate: (v) => v === 'omitir' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim()) || 'Email inválido (ej. nombre@ejemplo.com).',
       optional: true,
-      // NO normalizamos aquí; gestionamos "omitir" en el handler
+      normalize: (v) => (v === 'omitir' ? '' : String(v || '').trim()),
     },
   ];
 
@@ -95,36 +92,22 @@ export class WhatsappService {
 
   async sendButtons(to: string, message: string, buttons: any[]) {
     const safeButtons = buttons.slice(0, 3);
-    const body = {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: { type: 'button', body: { text: message }, action: { buttons: safeButtons } },
-    };
+    const body = { messaging_product: 'whatsapp', to, type: 'interactive',
+      interactive: { type: 'button', body: { text: message }, action: { buttons: safeButtons } } };
     const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
     return data;
   }
 
   async sendListMessage(to: string, message: string, buttonText: string, sections: any[]) {
-    const body = {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'list',
-        header: { type: 'text', text: 'Selecciona una opción' },
-        body: { text: message },
-        action: { button: buttonText, sections },
-      },
-    };
+    const body = { messaging_product: 'whatsapp', to, type: 'interactive',
+      interactive: { type: 'list', header: { type: 'text', text: 'Selecciona una opción' },
+        body: { text: message }, action: { button: buttonText, sections } } };
     try {
       const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
       return data;
-    } catch (e: any) {
-      console.error('sendListMessage error:', e?.response?.data || e?.message || e);
-      const simpleButtons = sections
-        .flatMap((s) => s.rows.map((r: any) => ({ type: 'reply', reply: { id: r.id, title: r.title } })))
-        .slice(0, 3);
+    } catch {
+      // fallback → 3 primeros como botones
+      const simpleButtons = sections.flatMap((s) => s.rows.map((r: any) => ({ type: 'reply', reply: { id: r.id, title: r.title } }))).slice(0, 3);
       return this.sendButtons(to, message, simpleButtons);
     }
   }
@@ -134,9 +117,7 @@ export class WhatsappService {
     form.append('messaging_product', 'whatsapp');
     form.append('file', buffer, { filename, contentType: mime });
     const url = `https://graph.facebook.com/v23.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/media`;
-    const { data } = await axios.post(url, form, {
-      headers: { Authorization: `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`, ...form.getHeaders() },
-    });
+    const { data } = await axios.post(url, form, { headers: { Authorization: `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`, ...form.getHeaders() } });
     return data.id as string;
   }
 
@@ -151,7 +132,7 @@ export class WhatsappService {
     return data;
   }
 
-  /* ========== Helpers estado ========== */
+  /* ========== Helpers ========== */
   private cleanOldStates() {
     const now = Date.now();
     const cutoff = now - 24 * 60 * 60 * 1000;
@@ -178,7 +159,8 @@ export class WhatsappService {
 
   private todayYMD(): { y: number; m: number; day: number } {
     try {
-      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: this.LOCAL_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: this.LOCAL_TZ, year: 'numeric', month: '2-digit', day: '2-digit' })
+        .formatToParts(new Date());
       const get = (t: any) => parts.find((p) => p.type === t)?.value || '';
       return { y: +get('year'), m: +get('month'), day: +get('day') };
     } catch {
@@ -205,17 +187,23 @@ export class WhatsappService {
     if (this.forms.has(from)) return this.handleFormInput(from, text);
 
     switch (us.state) {
-      case 'awaiting_service_type': return this.handleServiceSelection(text, from);
-      case 'awaiting_day_choice':   return 'Toca un *día* en la lista que te envié, por favor.';
-      case 'awaiting_time_choice':  return 'Elige una *hora* desde la lista enviada.';
+      case 'awaiting_service_type':         return this.handleServiceSelection(text, from);
+      case 'awaiting_day_choice':           return 'Toca un *día* en la lista que te envié, por favor.';
+      case 'awaiting_time_choice':          return 'Elige una *hora* desde la lista enviada.';
       case 'awaiting_appointment_confirmation': return this.handleAppointmentConfirmation(text, from);
-      default: return this.handleInitialMessage(text, from);
+      default:                               return this.handleInitialMessage(text, from);
     }
   }
 
   private async handleButtonAction(buttonId: string, from: string, us: UserState): Promise<string> {
-    if (buttonId.startsWith('day_'))   return this.handleDaySelected(buttonId.substring(4), from);
-    if (buttonId.startsWith('slot_')) { const row = parseInt(buttonId.substring(5), 10); return this.handleSlotRowSelected(row, from); }
+    // List replies también llegan aquí (ids propios)
+    if (buttonId.startsWith('day_')) {
+      return this.handleDaySelected(buttonId.substring(4), from);
+    }
+    if (buttonId.startsWith('slot_')) {
+      const row = parseInt(buttonId.substring(5), 10);
+      return this.handleSlotRowSelected(row, from);
+    }
 
     switch (buttonId) {
       case 'servicios':
@@ -303,10 +291,10 @@ export class WhatsappService {
   private async sendWelcomeButtons(to: string) {
     await this.sendButtons(
       to,
-      `👋 Bienvenido a *${COMPANY_NAME}*.
-Para agendar primero elige un *servicio*.`,
+      `👋 Bienvenido a *${COMPANY_NAME}*.\nAgenda en *2 minutos*: te mostramos *horarios reales* y recibes *PDF de confirmación*.`,
       [
         { type: 'reply', reply: { id: 'servicios', title: '🧾 Ver servicios' } },
+        { type: 'reply', reply: { id: 'agendar_cita', title: '📅 Agendar' } },
       ]
     );
   }
@@ -327,9 +315,7 @@ Para agendar primero elige un *servicio*.`,
   }
 
   private async sendNext7Days(to: string): Promise<string> {
-    const st = this.userStates.get(to);
-    if (!st?.serviceType) return this.sendServiceOptions(to); // guardia
-    const days = await this.sheets.getNextWorkingDays(7);
+    const days = await this.sheets.getNextWorkingDays(7); // excluye domingos y feriados
     const rows = days.map((d) => ({ id: `day_${d}`, title: d }));
     const sections = [{ title: 'Próximos 7 días hábiles', rows }];
     await this.sendListMessage(to, 'Elige el *día* de tu cita:', 'Elegir día', sections);
@@ -350,24 +336,25 @@ Para agendar primero elige un *servicio*.`,
   }
 
   private async handleDaySelected(dayYMD: string, from: string): Promise<string> {
+    // valida que esté dentro de los 7 días ofrecidos
     const offered = await this.sheets.getNextWorkingDays(7);
-    if (!offered.includes(dayYMD)) return this.sendNext7Days(from);
+    if (!offered.includes(dayYMD)) {
+      return this.sendNext7Days(from);
+    }
 
     const st = this.userStates.get(from) || { state: 'awaiting_day_choice' };
     st.chosenDay = dayYMD;
     st.state = 'awaiting_time_choice';
     st.currentStep = 2; st.updatedAt = Date.now();
+    this.userStates.set(from, st);
 
     const slots = await this.sheets.getSlotsForDate(dayYMD);
     if (!slots.length) {
       await this.sendMessage(from, `No hay horarios disponibles para *${dayYMD}*. Elige otro día.`);
-      this.userStates.set(from, st);
       return this.sendNext7Days(from);
     }
 
-    st.lastOfferedSlots = slots; // guardamos horas ofrecidas
-    this.userStates.set(from, st);
-
+    // Construye lista de horas disponibles (cada fila lleva el número de fila real para reservar)
     const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
     const sections = [{ title: `Horarios para ${dayYMD}`, rows }];
     await this.sendListMessage(from, `📅 *${dayYMD}* — elige una *hora* disponible:`, 'Elegir hora', sections);
@@ -378,36 +365,22 @@ Para agendar primero elige un *servicio*.`,
     const st = this.userStates.get(from);
     if (!st || !st.chosenDay) return 'Primero elige un *día* de la lista.';
 
-    let chosen = (st.lastOfferedSlots || []).find((s) => s.row === row);
-    if (!chosen) {
-      const fresh = await this.sheets.getSlotsForDate(st.chosenDay);
-      chosen = fresh.find((s) => s.row === row);
-    }
-    if (!chosen) {
-      await this.sendMessage(from, 'Ese horario ya no está disponible. Horas actualizadas:');
+    // Verifica de nuevo disponibilidad y reserva atómica (con servicio)
+    const ok = await this.sheets.reserveSlotRow(row, from, st.serviceType || '').catch(() => false);
+    if (!ok) {
+      // Se ocupó: vuelve a listar horas del día (el “botón” desaparece al no ser listado)
+      await this.sendMessage(from, 'Ese horario acaba de ocuparse 😕. Aquí tienes las *horas disponibles* actualizadas:');
       const slots = await this.sheets.getSlotsForDate(st.chosenDay);
       if (!slots.length) return this.sendNext7Days(from);
-      st.lastOfferedSlots = slots; this.userStates.set(from, st);
       const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
       const sections = [{ title: `Horarios para ${st.chosenDay}`, rows }];
       await this.sendListMessage(from, `📅 *${st.chosenDay}* — elige una *hora* disponible:`, 'Elegir hora', sections);
       return '';
     }
 
-    const ok = await this.sheets.reserveSlotRow(row, from, st.serviceType || '').catch((e) => {
-      console.error('reserveSlotRow error:', e?.response?.data || e?.message || e);
-      return false;
-    });
-    if (!ok) {
-      await this.sendMessage(from, 'Ese horario acaba de ocuparse 😕. Horas actualizadas:');
-      const slots = await this.sheets.getSlotsForDate(st.chosenDay);
-      if (!slots.length) return this.sendNext7Days(from);
-      st.lastOfferedSlots = slots; this.userStates.set(from, st);
-      const rows = slots.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
-      const sections = [{ title: `Horarios para ${st.chosenDay}`, rows }];
-      await this.sendListMessage(from, `📅 *${st.chosenDay}* — elige una *hora* disponible:`, 'Elegir hora', sections);
-      return '';
-    }
+    // Guarda selección y pasa a formulario
+    const rSlots = await this.sheets.getSlotsForDate(st.chosenDay);
+    const chosen = rSlots.find((s) => s.row === row) || { row, date: st.chosenDay, time: '', label: '' };
 
     st.appointmentDate = st.chosenDay;
     st.appointmentTime = chosen.time;
@@ -449,16 +422,6 @@ Para agendar primero elige un *servicio*.`,
 
     const ntext = this.normalize(text);
     const field = f.schema[f.idx];
-
-    // Aceptar "omitir" explícito para email ANTES de validar
-    if (field.key === 'email' && ntext === 'omitir') {
-      (f.data as any)[field.key] = '';
-      f.idx++;
-      if (f.idx >= f.schema.length) return this.askForConfirmation(from, f);
-      await this.askNext(from);
-      return '';
-    }
-
     let value = field.normalize ? field.normalize(text) : text;
     if (field.key === 'telefono' && ['si', 'sí', 'ok', 'confirmo'].includes(ntext)) value = f.autofilledPhone;
 
@@ -468,25 +431,24 @@ Para agendar primero elige un *servicio*.`,
     (f.data as any)[field.key] = String(value || '').trim();
     f.idx++;
 
-    if (f.idx >= f.schema.length) return this.askForConfirmation(from, f);
-    await this.askNext(from);
-    return '';
-  }
+    if (f.idx >= f.schema.length) {
+      const resumen =
+        `📋 *Revisa tu solicitud:*\n\n` +
+        `🧾 *Servicio:* ${f.serviceType}\n` +
+        `📅 *Fecha:* ${f.slots[0]?.date}\n` +
+        `🕒 *Hora:* ${f.slots[0]?.time}\n\n` +
+        `👤 *Nombre:* ${f.data.nombre}\n` +
+        `📞 *Teléfono:* ${f.data.telefono}\n` +
+        `✉️ *Email:* ${f.data.email || '—'}\n\n` +
+        `¿Confirmas para guardar en agenda?`;
+      await this.sendButtons(from, resumen, [
+        { type: 'reply', reply: { id: 'confirm_yes', title: '✅ Confirmar' } },
+        { type: 'reply', reply: { id: 'confirm_edit', title: '✏️ Editar' } },
+      ]);
+      return '';
+    }
 
-  private async askForConfirmation(from: string, f: { data: ClientData; serviceType: string; slots: SlotOffered[] }) {
-    const resumen =
-      `📋 *Revisa tu solicitud:*\n\n` +
-      `🧾 *Servicio:* ${f.serviceType}\n` +
-      `📅 *Fecha:* ${f.slots[0]?.date}\n` +
-      `🕒 *Hora:* ${f.slots[0]?.time}\n\n` +
-      `👤 *Nombre:* ${f.data.nombre}\n` +
-      `📞 *Teléfono:* ${f.data.telefono}\n` +
-      `✉️ *Email:* ${f.data.email || '—'}\n\n` +
-      `¿Confirmas para guardar en agenda?`;
-    await this.sendButtons(from, resumen, [
-      { type: 'reply', reply: { id: 'confirm_yes', title: '✅ Confirmar' } },
-      { type: 'reply', reply: { id: 'confirm_edit', title: '✏️ Editar' } },
-    ]);
+    await this.askNext(from);
     return '';
   }
 
@@ -495,67 +457,41 @@ Para agendar primero elige un *servicio*.`,
     const st = this.userStates.get(from);
     if (!f || !st) return 'No tengo registro de tu solicitud. Escribe "hola" para comenzar.';
 
-    // 1) Guardar en Sheets
     try {
       await this.sheets.appendAppointmentRow({
         telefono: f.data.telefono!, nombre: f.data.nombre!, email: f.data.email || '',
         servicio: f.serviceType || 'Sin especificar',
         fecha: f.slots[0].date, hora: f.slots[0].time, slotRow: f.slots[0].row,
       });
-    } catch (e: any) {
-      console.error('appendAppointmentRow error:', e?.response?.data || e?.message || e);
+    } catch {
       return 'Ocurrió un problema al guardar tu cita. Intenta nuevamente más tarde o llama al +591 65900645.';
     }
 
-    // 2) Confirmación de texto
-    await this.sendMessage(
-      from,
-      `✅ *¡Cita confirmada!*` +
-      `\n\nGracias por agendar con *${COMPANY_NAME}*.` +
-      `\nTe esperamos el ${f.slots[0].date} a las ${f.slots[0].time}.` +
-      `\n\nSi necesitas cancelar o reprogramar, contáctanos al +591 65900645.`
+    await this.sendMessage(from,
+      `✅ *¡Cita confirmada!*\n\nGracias por agendar con *${COMPANY_NAME}*.\n` +
+      `Te esperamos el ${f.slots[0].date} a las ${f.slots[0].time}.\n\nSi necesitas cancelar o reprogramar, contáctanos al +591 65900645.`
     );
 
-    // 3) PDF (con logs y fallback real)
-    await this.sendPdfReceipt(from, {
-      clientData: f.data,
-      serviceType: f.serviceType,
-      appointmentDate: f.slots[0].date,
-      appointmentTime: f.slots[0].time,
-    });
-
-    // reset
-    this.forms.delete(from);
-    this.userStates.set(from, { state: 'initial', updatedAt: Date.now() });
-    return '¿Necesitas algo más? Escribe "hola" para volver al menú.';
-  }
-
-  /* ========== PDF helper con logging/fallback ========== */
-  private async sendPdfReceipt(
-    to: string,
-    payload: { clientData: ClientData; serviceType: string; appointmentDate: string; appointmentTime: string }
-  ) {
     try {
-      console.log('[pdf] Generando comprobante…');
-      const { buffer, filename } = await this.pdf.generateConfirmationPDFBuffer(payload);
-
+      const { buffer, filename } = await this.pdf.generateConfirmationPDFBuffer({
+        clientData: f.data, serviceType: f.serviceType, appointmentDate: f.slots[0].date, appointmentTime: f.slots[0].time,
+      });
+      let sentOk = false;
       if (this.pdf.isS3Enabled()) {
         try {
           const url = await this.pdf.uploadToS3(buffer, filename, 'application/pdf');
-          console.log('[pdf] Subido a S3:', url);
-          await this.sendDocumentByLink(to, url, filename, `Comprobante de cita - ${COMPANY_NAME}`);
-          return;
-        } catch (e: any) {
-          console.error('[pdf] Error S3, usando Media API:', e?.response?.data || e?.message || e);
-        }
+          await this.sendDocumentByLink(from, url, filename, `Comprobante de cita - ${COMPANY_NAME}`);
+          sentOk = true;
+        } catch {}
       }
+      if (!sentOk) {
+        const mediaId = await this.uploadMediaToWhatsApp(buffer, filename, 'application/pdf');
+        await this.sendDocumentByMediaId(from, mediaId, filename, `Comprobante de cita - ${COMPANY_NAME}`);
+      }
+    } catch {}
 
-      const mediaId = await this.uploadMediaToWhatsApp(buffer, filename, 'application/pdf');
-      console.log('[pdf] Subido a Media API, id:', mediaId);
-      await this.sendDocumentByMediaId(to, mediaId, filename, `Comprobante de cita - ${COMPANY_NAME}`);
-    } catch (e: any) {
-      console.error('[pdf] Error enviando PDF:', e?.response?.data || e?.message || e);
-      await this.sendMessage(to, 'Tu cita está confirmada ✅. No pude adjuntar el PDF ahora mismo; si lo necesitas, avísame y te lo reenvío.');
-    }
+    this.forms.delete(from);
+    this.userStates.set(from, { state: 'initial', updatedAt: Date.now() });
+    return '¿Necesitas algo más? Escribe "hola" para volver al menú.';
   }
 }
