@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import * as PDFDocument from 'pdfkit';
 import * as fs from 'fs';
 import * as path from 'path';
-import QRCode from 'qrcode';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 const COMPANY_NAME = 'Russell Bedford Bolivia Encinas Auditores y Consultores SRL';
@@ -78,7 +77,7 @@ export class PdfService {
   }
 
   /* =====================================================
-     PDF ESTÉTICO (alineado, azul, con QR, ubicación y horarios)
+     PDF ESTÉTICO (alineado, azul, ubicación y horarios)
      ===================================================== */
   async generateConfirmationPDFBuffer(state: {
     clientData: ClientData;
@@ -109,26 +108,6 @@ export class PdfService {
     }).format(new Date());
 
     const bookingId = this.makeBookingId(state);
-
-    // Prepara QR (antes de dibujar para evitar solapes/async raro)
-    const qrPayload = {
-      empresa: COMPANY_NAME,
-      nombre: state.clientData?.nombre || '',
-      telefono: state.clientData?.telefono || '',
-      email: state.clientData?.email || '',
-      fecha: state.appointmentDate,
-      hora: state.appointmentTime,
-      servicio: state.serviceType,
-      ubicacion: COMPANY_MAPS_URL,
-      id_reserva: bookingId,
-      generado: generatedAt,
-    };
-    const qrBuffer = await QRCode.toBuffer(JSON.stringify(qrPayload), {
-      type: 'png',
-      errorCorrectionLevel: 'M',
-      margin: 1,
-      scale: 6,
-    });
 
     // Logo (mismo archivo para logo y marca de agua)
     const logoBuf = resolveImageBuffer('logo-russel.png');
@@ -230,13 +209,12 @@ export class PdfService {
         .strokeColor(COLORS.line)
         .stroke();
 
-      // Rejilla 3 columnas (cliente | cita | QR)
+      // Rejilla 2 columnas (cliente | cita)
       const col = {
         left: inner.x,
-        center: inner.x + 210,
-        rightBox: inner.x + inner.w - 140,
+        center: inner.x + 260, // un poco más ancho al quitar QR
         y: sepY + 16,
-        lineW: 260,
+        lineW: 300,
         rowH: 22,
       };
 
@@ -246,29 +224,11 @@ export class PdfService {
       y = this.infoRow(doc, col.left, y, 'Teléfono', state.clientData?.telefono || '—', COLORS, col.lineW, col.rowH);
       y = this.infoRow(doc, col.left, y, 'Email', state.clientData?.email || '—', COLORS, col.lineW, col.rowH);
 
-      // Columna centro (cita)
+      // Columna derecha (cita)
       y = col.y;
       y = this.infoRow(doc, col.center, y, 'Servicio', this.toTitle(state.serviceType || '—'), COLORS, col.lineW, col.rowH);
       y = this.infoRow(doc, col.center, y, 'Fecha', state.appointmentDate || '—', COLORS, col.lineW, col.rowH);
       y = this.infoRow(doc, col.center, y, 'Hora', state.appointmentTime || '—', COLORS, col.lineW, col.rowH);
-
-      // Caja de QR a la derecha
-      const qrBox = { x: col.rightBox, y: col.y - 6, size: 140, r: 10 };
-      doc
-        .roundedRect(qrBox.x, qrBox.y, qrBox.size, qrBox.size, qrBox.r)
-        .strokeColor(COLORS.line)
-        .lineWidth(1)
-        .stroke();
-      const inset = 10;
-      doc.image(qrBuffer, qrBox.x + inset, qrBox.y + inset, { width: qrBox.size - inset * 2 });
-      doc
-        .font('Helvetica')
-        .fontSize(9)
-        .fillColor(COLORS.muted)
-        .text('Código QR de verificación', qrBox.x, qrBox.y + qrBox.size + 6, {
-          width: qrBox.size,
-          align: 'center',
-        });
 
       /* =============== UBICACIÓN / HORARIOS / RECOMENDACIONES =============== */
       const sectionStartY = card.y + card.h + 24;
@@ -395,7 +355,7 @@ export class PdfService {
     label: string,
     value: string,
     COLORS: any,
-    lineWidth = 260,
+    lineWidth = 300,
     rowH = 22,
   ) {
     const labelW = 80;

@@ -300,6 +300,14 @@ export class WhatsappService {
     us.updatedAt = Date.now();
     this.userStates.set(from, us);
 
+    // Si el flujo fue finalizado, cualquier nuevo mensaje reenvía saludo simple y menú (sin bienvenida larga)
+    if (!buttonId && us.state === 'ended') {
+      await this.sendMessage(from, 'Hola, soy el Asistente Virtual de Russell Bedford Bolivia Encinas Auditores y Consultores SRL.');
+      await this.sendMainMenuList(from);
+      this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
+      return '';
+    }
+
     const cleanedText = (text || '').trim().toLowerCase();
 
     if (cleanedText.includes('cancelar')) {
@@ -361,13 +369,24 @@ export class WhatsappService {
         await this.sendWelcomeButtons(from);
         return '';
 
-      case 'ver_servicios':
-        await this.sendServiceOptions(from);    // lista completa
-        // botones de Inicio / Agendar
+      case 'ver_servicios': {
+        // 1) Enviar servicios en texto tipo lista
+        const listText =
+          'Nuestros servicios:\n' +
+          this.SERVICE_CATALOG.map(s => `- ${s.label}`).join('\n');
+        await this.sendMessage(from, listText);
+
+        // 2) Ofrecer botones: primero Agendar, luego Finalizar
         await this.sendButtons(from, '¿Qué deseas hacer ahora?', [
-          { type: 'reply', reply: { id: 'inicio', title: '🏠 Inicio' } },
           { type: 'reply', reply: { id: 'agendar_cita', title: '📅 Agendar Cita' } },
+          { type: 'reply', reply: { id: 'finalizar', title: '🏁 Finalizar' } },
         ]);
+        return '';
+      }
+
+      case 'finalizar':
+        await this.sendMessage(from, 'Gracias por escribirnos. ¡Quedamos atentos a cualquier duda!');
+        this.userStates.set(from, { state: 'ended', updatedAt: Date.now() });
         return '';
 
       case 'agendar_cita':
@@ -387,6 +406,11 @@ export class WhatsappService {
 
       case 'ubicacion':
         await this.sendLocation(from);
+        // Pregunta de continuación Sí/No
+        await this.sendButtons(from, '¿Hay algo más en que te pueda ayudar?', [
+          { type: 'reply', reply: { id: 'more_yes', title: 'Sí' } },
+          { type: 'reply', reply: { id: 'more_no', title: 'No' } },
+        ]);
         return '';
 
       // Edición de formulario
@@ -414,6 +438,17 @@ export class WhatsappService {
         return 'No encontré el formulario activo. Escribe "hola" para comenzar de nuevo.';
       }
 
+      case 'more_yes':
+        // Mostrar menú sin mensaje de bienvenida
+        await this.sendMainMenuList(from);
+        this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
+        return '';
+
+      case 'more_no':
+        await this.sendMessage(from, 'Gracias por escribirnos. ¡Quedamos atentos a cualquier duda!');
+        this.userStates.set(from, { state: 'ended', updatedAt: Date.now() });
+        return '';
+
       default: {
         // Toca un servicio por botón
         if (buttonId.startsWith('serv_')) {
@@ -431,6 +466,11 @@ export class WhatsappService {
           if (!area) return 'Área no reconocida.';
           await this.sendMessage(from, `Te comparto el contacto del *${area.name}* 👇`);
           await this.sendContact(from, area.name, area.phone);
+          // Pregunta de continuación Sí/No
+          await this.sendButtons(from, '¿Hay algo más en que te pueda ayudar?', [
+            { type: 'reply', reply: { id: 'more_yes', title: 'Sí' } },
+            { type: 'reply', reply: { id: 'more_no', title: 'No' } },
+          ]);
           return '';
         }
         return 'No reconozco ese comando. Escribe "hola" para comenzar.';
@@ -444,7 +484,7 @@ export class WhatsappService {
       // 1) Mensaje de bienvenida
       await this.sendMessage(
         from,
-        `Hola, soy el *Asistente Virtual* de *${COMPANY_NAME}*.`
+        `Hola, soy el *Asistente Virtual* \n de *${COMPANY_NAME}*.`
       );
 
     await this.sendMainMenuList(from);
