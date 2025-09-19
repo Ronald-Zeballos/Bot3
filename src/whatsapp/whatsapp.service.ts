@@ -6,9 +6,9 @@ import { PdfService } from '../pdf/pdf.service';
 
 const COMPANY_NAME = 'Russell Bedford Bolivia Encinas Auditores y Consultores SRL';
 const COMPANY_PHONE_E164 = '+59170400175'; // para vCard temporal
-const COMPANY_HOURS_TEXT = '🕒 Horario de atención: 08:00–12:00 y 14:30–18:30 (Lun–Vie)';
+const COMPANY_HOURS_TEXT = 'Nuestro horario de atención es de *Lunes a Viernes* de *08:00–12:00 y 14:30–18:30*';
 const COMPANY_MAPS_URL = 'https://maps.app.goo.gl/TU82fjJzHG3RBAbTA';
-const COMPANY_LOCATION_TEXT = '📍 Russell Bedford Bolivia – Encinas Auditores y Consultores SRL\n' + COMPANY_MAPS_URL;
+const COMPANY_LOCATION_TEXT = 'Nuestra ubicación es: \n 📍 Russell Bedford Bolivia – Encinas Auditores y Consultores SRL\n' + COMPANY_MAPS_URL;
 
 type ClientData = { nombre?: string; telefono?: string; email?: string; servicio?: string; fecha?: string; hora?: string; };
 
@@ -96,7 +96,7 @@ export class WhatsappService {
   private readonly FORM_APPT: FormField[] = [
     {
       key: 'nombre',
-      prompt: () => '🧍‍♀️ *Paso 1/3*: ¿Cuál es tu *nombre y apellido*?',
+      prompt: () => 'Para agendar tu cita ¿Cuál es tu *nombre y apellido*?',
       validate: (v) => {
         const val = String(v || '').trim();
         if (!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+$/.test(val)) return 'Usa solo letras y espacios (ej. María González).';
@@ -108,7 +108,7 @@ export class WhatsappService {
     {
       key: 'telefono',
       prompt: (ctx) =>
-        `📞 *Paso 2/3*: ¿Confirmas este *número* para contactarte: *${ctx.autofilledPhone}*?`,
+        `Muchas gracias, ¿Confirmas este *número* para contactarte: *${ctx.autofilledPhone}*?`,
       validate: (v) => {
         const digits = String(v || '').replace(/[^\d]/g, '');
         const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
@@ -123,7 +123,7 @@ export class WhatsappService {
     },
     {
       key: 'email',
-      prompt: () => '✉️ *Paso 3/3*: ¿Cuál es tu *email* para enviarte la confirmación?',
+      prompt: () => '¿Cuál es tu *email* para enviarte la confirmación?',
       validate: (v) => {
         const val = String(v || '').trim().toLowerCase();
         return /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(val) || 'Email inválido (ej. nombre@ejemplo.com).';
@@ -362,7 +362,6 @@ export class WhatsappService {
         return '';
 
       case 'ver_servicios':
-        await this.sendServicesAsButtons(from); // 3 por botón
         await this.sendServiceOptions(from);    // lista completa
         // botones de Inicio / Agendar
         await this.sendButtons(from, '¿Qué deseas hacer ahora?', [
@@ -445,7 +444,7 @@ export class WhatsappService {
       // 1) Mensaje de bienvenida
       await this.sendMessage(
         from,
-        `👋 Bienvenido a *${COMPANY_NAME}*.\nAgenda en *2 minutos*: te mostramos *horarios reales* y recibes *PDF de confirmación*.`
+        `Hola, soy el *Asistente Virtual* de *${COMPANY_NAME}*.`
       );
 
     await this.sendMainMenuList(from);
@@ -485,15 +484,6 @@ export class WhatsappService {
     );
   }
 
-  // Servicios por botón (3 más usados + “Más servicios”)
-  private async sendServicesAsButtons(to: string) {
-    await this.sendButtons(to, 'Servicios destacados:', [
-      { type: 'reply', reply: { id: 'serv_Asesoría_Tributaria', title: 'Tributario' } },
-      { type: 'reply', reply: { id: 'serv_Asesoría_Legal', title: 'Legal' } },
-      { type: 'reply', reply: { id: 'serv_Contabilidad', title: 'Contabilidad' } },
-    ]);
-    // Botón para abrir lista completa si hace falta (en la práctica ya envío lista abajo)
-  }
 
   private async sendServiceOptions(to: string) {
     const sections = [{
@@ -556,32 +546,37 @@ export class WhatsappService {
   }
 
   private async handleSlotRowSelected(row: number, from: string): Promise<string> {
-    const st = this.userStates.get(from);
-    if (!st || !st.chosenDay) return 'Primero elige un *día* de la lista.';
+  const st = this.userStates.get(from);
+  if (!st || !st.chosenDay) return 'Primero elige un *día* de la lista.';
 
-    const ok = await this.sheets.reserveSlotRow(row, from, st.serviceType || '').catch(() => false);
-    if (!ok) {
-      await this.sendMessage(from, 'Ese horario acaba de ocuparse 😕. Aquí tienes las *horas disponibles* actualizadas:');
-      const slots = await this.sheets.getSlotsForDate(st.chosenDay);
-      if (!slots.length) return this.sendNext7Days(from);
-      st.lastOfferedSlots = slots; st.slotsPage = 0; this.userStates.set(from, st);
-      await this.sendSlotsPaged(from, st.chosenDay, slots, 0);
-      return '';
-    }
+  // 👈 Toma el horario ELEGIDO antes de reservar (porque luego ya no aparece como DISPONIBLE)
+  const chosenFromState =
+    st.lastOfferedSlots?.find((s) => s.row === row) ||
+    null;
 
-    const rSlots = await this.sheets.getSlotsForDate(st.chosenDay);
-    const chosen = rSlots.find((s) => s.row === row) || { row, date: st.chosenDay, time: '', label: '' };
-
-    st.appointmentDate = st.chosenDay;
-    st.appointmentTime = chosen.time;
-    st.state = 'collecting_form';
-    st.currentStep = 3; st.updatedAt = Date.now();
-    this.userStates.set(from, st);
-
-    this.startForm(from, st.serviceType || 'Servicio', [chosen]);
-    await this.askNext(from);
+  // Reserva atómica
+  const ok = await this.sheets.reserveSlotRow(row, from, st.serviceType || '').catch(() => false);
+  if (!ok) {
+    await this.sendMessage(from, 'Ese horario acaba de ocuparse 😕. Aquí tienes las *horas disponibles* actualizadas:');
+    const slots = await this.sheets.getSlotsForDate(st.chosenDay);
+    if (!slots.length) return this.sendNext7Days(from);
+    st.lastOfferedSlots = slots; st.slotsPage = 0; this.userStates.set(from, st);
+    await this.sendSlotsPaged(from, st.chosenDay, slots, 0);
     return '';
   }
+
+  const chosen = chosenFromState || { row, date: st.chosenDay, time: '', label: '' };
+
+  st.appointmentDate = st.chosenDay;
+  st.appointmentTime = chosen.time;
+  st.state = 'collecting_form';
+  st.currentStep = 3; st.updatedAt = Date.now();
+  this.userStates.set(from, st);
+
+  this.startForm(from, st.serviceType || 'Servicio', [chosen]);
+  await this.askNext(from);
+  return '';
+}
 
   private async handleAppointmentConfirmation(text: string, from: string): Promise<string> {
     const t = text.toLowerCase().trim();
@@ -707,13 +702,27 @@ export class WhatsappService {
           const url = await this.pdf.uploadToS3(buffer, filename, 'application/pdf');
           await this.sendDocumentByLink(from, url, filename, `Comprobante de cita - ${COMPANY_NAME}`);
           sentOk = true;
-        } catch {}
+        } catch (e){
+          console.error('Error subiendo a S3 o enviando por link:', (e as any)?.response?.data || e);
+        }
       }
-      if (!sentOk) {
-        const mediaId = await this.uploadMediaToWhatsApp(buffer, filename, 'application/pdf');
-        await this.sendDocumentByMediaId(from, mediaId, filename, `Comprobante de cita - ${COMPANY_NAME}`);
+
+       if (!sentOk) {
+          try {
+            const mediaId = await this.uploadMediaToWhatsApp(buffer, filename, 'application/pdf');
+            await this.sendDocumentByMediaId(from, mediaId, filename, `Comprobante de cita - ${COMPANY_NAME}`);
+            sentOk = true;
+          } catch (e) {
+            console.error('Error subiendo/enviando PDF por mediaId:', (e as any)?.response?.data || e);
+          }
+        }
+
+        if (!sentOk) {
+          await this.sendMessage(from, 'No pude adjuntar el PDF ahora mismo. Te lo reenviaré en breve o puedes solicitarlo respondiendo "enviar pdf".');
+        }
+      } catch (e) {
+        console.error('Error generando el PDF:', (e as any)?.message || e);
       }
-    } catch {}
 
     this.forms.delete(from);
     this.userStates.set(from, { state: 'initial', updatedAt: Date.now() });
