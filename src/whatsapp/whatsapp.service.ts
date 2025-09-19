@@ -5,6 +5,10 @@ import { SheetsService, SlotOffered } from '../sheets/sheets.service';
 import { PdfService } from '../pdf/pdf.service';
 
 const COMPANY_NAME = 'Russell Bedford Bolivia Encinas Auditores y Consultores SRL';
+const COMPANY_PHONE_E164 = '+59170400175'; // para vCard temporal
+const COMPANY_HOURS_TEXT = '🕒 Horario de atención: 08:00–12:00 y 14:30–18:30 (Lun–Vie)';
+const COMPANY_MAPS_URL = 'https://maps.app.goo.gl/TU82fjJzHG3RBAbTA';
+const COMPANY_LOCATION_TEXT = '📍 Russell Bedford Bolivia – Encinas Auditores y Consultores SRL\n' + COMPANY_MAPS_URL;
 
 type ClientData = { nombre?: string; telefono?: string; email?: string; servicio?: string; fecha?: string; hora?: string; };
 
@@ -45,31 +49,66 @@ export class WhatsappService {
     { id: 'conta', label: 'Contabilidad', aliases: ['contable', 'libros', 'declaraciones', 'facturación', 'facturacion'] },
     { id: 'sistemas', label: 'Sistemas Informáticos', aliases: ['software', 'redes', 'informática', 'informatica', 'tecnología', 'tecnologia'] },
   ];
+    private async sendMainMenuList(to: string) {
+      const sections = [{
+        title: 'Menú principal',
+        rows: [
+          { id: 'ver_servicios', title: '🧾 Ver servicios' },
+          { id: 'agendar_cita',  title: '📅 Agendar cita' },
+          { id: 'hablar_asesor', title: '👤 Hablar con asesor' },
+          { id: 'horario',       title: '🕒 Horario' },
+          { id: 'ubicacion',     title: '📍 Ubicación' },
+        ],
+      }];
+      await this.sendListMessage(
+        to,
+        '¿En qué te puedo ayudar?',
+        'Abrir menú',
+        sections
+      );
+      return '';
+    }
+
+  // Áreas para "Hablar con asesor" (por ahora todos al mismo número)
+  private readonly ADVISOR_AREAS = [
+    { id: 'area_tributario', title: 'Tributario', name: 'Asesor de Tributario', phone: COMPANY_PHONE_E164 },
+    { id: 'area_legal',      title: 'Legal',      name: 'Asesor de Legal',      phone: COMPANY_PHONE_E164 },
+    { id: 'area_laboral',    title: 'Laboral',    name: 'Asesor de Laboral',    phone: COMPANY_PHONE_E164 },
+    { id: 'area_conta',      title: 'Contabilidad', name: 'Asesor de Contabilidad', phone: COMPANY_PHONE_E164 },
+    { id: 'area_sistemas',   title: 'Sistemas',   name: 'Asesor de Sistemas',   phone: COMPANY_PHONE_E164 },
+  ];
 
   private userStates = new Map<string, UserState>();
   private forms = new Map<
     string,
-    { idx: number; data: ClientData; schema: FormField[]; serviceType: string; slots: SlotOffered[]; autofilledPhone: string }
+    {
+      idx: number;
+      data: ClientData;
+      schema: FormField[];
+      serviceType: string;
+      slots: SlotOffered[];
+      autofilledPhone: string;
+      awaitingPhoneManual?: boolean; // ← si elige "No" en confirmar teléfono
+    }
   >();
 
-  // === FORM: Email ahora es OBLIGATORIO, y se mejora validación de nombre/teléfono ===
+  // === FORM ===
   private readonly FORM_APPT: FormField[] = [
     {
       key: 'nombre',
       prompt: () => '🧍‍♀️ *Paso 1/3*: ¿Cuál es tu *nombre y apellido*?',
       validate: (v) => {
         const val = String(v || '').trim();
-        // Solo letras (con acentos) y espacios, mínimo dos palabras de 2+ letras
         if (!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+$/.test(val)) return 'Usa solo letras y espacios (ej. María González).';
         const parts = val.split(/\s+/).filter(Boolean);
-        if (parts.length < 2 || parts.some(p => p.length < 2)) return 'Escribe nombre y apellido (ej. María González).';
+        if (parts.length < 2 || parts.some((p) => p.length < 2)) return 'Escribe nombre y apellido (ej. María González).';
         return true;
       },
     },
     {
       key: 'telefono',
       prompt: (ctx) =>
-        `📞 *Paso 2/3*: ¿Confirmas este *número* para contactarte: *${ctx.autofilledPhone}*?\n\nResponde con:\n• *sí* para usarlo\n• O escribe otro número (8 dígitos; se admite +591)`,
+        `📞 *Paso 2/3*: ¿Confirmas este *número* para contactarte: *${ctx.autofilledPhone}*?`,
       validate: (v) => {
         const digits = String(v || '').replace(/[^\d]/g, '');
         const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
@@ -87,7 +126,6 @@ export class WhatsappService {
       prompt: () => '✉️ *Paso 3/3*: ¿Cuál es tu *email* para enviarte la confirmación?',
       validate: (v) => {
         const val = String(v || '').trim().toLowerCase();
-        // Regex sólida pero razonable (no RFC completa)
         return /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(val) || 'Email inválido (ej. nombre@ejemplo.com).';
       },
       normalize: (v) => String(v || '').trim().toLowerCase(),
@@ -109,24 +147,58 @@ export class WhatsappService {
 
   async sendButtons(to: string, message: string, buttons: any[]) {
     const safeButtons = buttons.slice(0, 3);
-    const body = { messaging_product: 'whatsapp', to, type: 'interactive',
-      interactive: { type: 'button', body: { text: message }, action: { buttons: safeButtons } } };
+    const body = {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: { type: 'button', body: { text: message }, action: { buttons: safeButtons } },
+    };
     const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
     return data;
   }
 
   async sendListMessage(to: string, message: string, buttonText: string, sections: any[]) {
-    // WhatsApp Cloud API: máx 10 filas total (no solo por sección). Paginamos externamente.
-    const body = { messaging_product: 'whatsapp', to, type: 'interactive',
-      interactive: { type: 'list', header: { type: 'text', text: 'Selecciona una opción' },
-        body: { text: message }, action: { button: buttonText, sections } } };
+    const body = {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'list',
+        header: { type: 'text', text: 'Selecciona una opción' },
+        body: { text: message },
+        action: { button: buttonText, sections },
+      },
+    };
     try {
       const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
       return data;
-    } catch (e: any) {
-      // fallback → 3 primeros como botones
-      const simpleButtons = sections.flatMap((s) => s.rows.map((r: any) => ({ type: 'reply', reply: { id: r.id, title: r.title } }))).slice(0, 3);
+    } catch {
+      const simpleButtons = sections
+        .flatMap((s) => s.rows.map((r: any) => ({ type: 'reply', reply: { id: r.id, title: r.title } })))
+        .slice(0, 3);
       return this.sendButtons(to, message, simpleButtons);
+    }
+  }
+
+  // Enviar un contacto (vCard) — WhatsApp Cloud API "contacts"
+  async sendContact(to: string, fullName: string, phoneE164: string) {
+    const body = {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'contacts',
+      contacts: [
+        {
+          name: { formatted_name: fullName, first_name: fullName },
+          phones: [{ phone: phoneE164, type: 'CELL', wa_id: phoneE164.replace(/[^\d]/g, '') }],
+        },
+      ],
+    };
+    try {
+      const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
+      return data;
+    } catch {
+      // Fallback: solo texto
+      return this.sendMessage(to, `📇 ${fullName}\n📞 ${phoneE164}`);
     }
   }
 
@@ -186,7 +258,7 @@ export class WhatsappService {
     }
   }
 
-  /* ========== Paginación de horarios (máx 10 filas totales por mensaje) ========== */
+  /* ========== Paginación de horarios ========== */
   private buildSlotPages(slots: SlotOffered[], pageSize = 9): SlotOffered[][] {
     const pages: SlotOffered[][] = [];
     for (let i = 0; i < slots.length; i += pageSize) pages.push(slots.slice(i, i + pageSize));
@@ -194,18 +266,14 @@ export class WhatsappService {
   }
 
   private async sendSlotsPaged(to: string, dayYMD: string, slots: SlotOffered[], pageIdx = 0) {
-    const pages = this.buildSlotPages(slots, 9); // 9 filas + 1 "Siguiente"
+    const pages = this.buildSlotPages(slots, 9);
     const safePage = Math.max(0, Math.min(pageIdx, pages.length - 1));
     const page = pages[safePage] || [];
 
     const rows = page.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
-    if (pages.length > 1 && safePage < pages.length - 1) {
-      rows.push({ id: `more_${safePage + 1}`, title: 'Siguiente ▷' });
-    }
+    if (pages.length > 1 && safePage < pages.length - 1) rows.push({ id: `more_${safePage + 1}`, title: 'Siguiente ▷' });
     if (pages.length > 1 && safePage > 0) {
-      // opcional: permitir volver atrás añadiendo “◁ Anterior” (usa una fila)
       rows.unshift({ id: `more_${safePage - 1}`, title: '◁ Anterior' });
-      // nos mantenemos <=10 filas: si agregamos “Anterior”, quitamos el último horario si hace falta
       if (rows.length > 10) rows.splice(rows.length - 2, 1);
     }
 
@@ -215,6 +283,15 @@ export class WhatsappService {
       'Elegir hora',
       [{ title: `Horarios para ${dayYMD}`, rows }]
     );
+  }
+
+  /* ========== Bloques de mensajes cortos ========== */
+  private async sendHours(to: string) {
+    return this.sendMessage(to, COMPANY_HOURS_TEXT);
+  }
+
+  private async sendLocation(to: string) {
+    return this.sendMessage(to, COMPANY_LOCATION_TEXT);
   }
 
   /* ========== Lógica principal ========== */
@@ -245,42 +322,75 @@ export class WhatsappService {
   }
 
   private async handleButtonAction(buttonId: string, from: string, us: UserState): Promise<string> {
-    if (buttonId.startsWith('day_')) {
-      return this.handleDaySelected(buttonId.substring(4), from);
-    }
-    if (buttonId.startsWith('slot_')) {
-      const row = parseInt(buttonId.substring(5), 10);
-      return this.handleSlotRowSelected(row, from);
-    }
+    // Día/Hora
+    if (buttonId.startsWith('day_')) return this.handleDaySelected(buttonId.substring(4), from);
+    if (buttonId.startsWith('slot_')) return this.handleSlotRowSelected(parseInt(buttonId.substring(5), 10), from);
     if (buttonId.startsWith('more_')) {
-      // Navegación de páginas de horarios
       const idx = parseInt(buttonId.substring(5), 10) || 0;
       const st = this.userStates.get(from);
       if (!st?.chosenDay || !st.lastOfferedSlots?.length) return 'Primero elige un *día* de la lista.';
-      st.slotsPage = idx;
-      this.userStates.set(from, st);
+      st.slotsPage = idx; this.userStates.set(from, st);
       await this.sendSlotsPaged(from, st.chosenDay, st.lastOfferedSlots, idx);
       return '';
     }
 
-    switch (buttonId) {
-      case 'servicios':
-        return this.handleServiceSelection('servicios', from);
+    // Confirmación de teléfono
+    if (buttonId === 'tel_yes' || buttonId === 'tel_no') {
+      const f = this.forms.get(from);
+      if (!f) return '';
+      if (buttonId === 'tel_yes') {
+        // usar el autofilled y avanzar
+        (f.data as any)['telefono'] = f.autofilledPhone;
+        f.awaitingPhoneManual = false;
+        f.idx++;
+        this.forms.set(from, f);
+        await this.askNext(from);
+        return '';
+      } else {
+        // pedirlo manualmente
+        f.awaitingPhoneManual = true;
+        this.forms.set(from, f);
+        await this.sendMessage(from, 'Por favor, escribe tu *número de 8 dígitos* (se admite con o sin +591).');
+        return '';
+      }
+    }
 
-      // 🚫 Bloqueo de “Agendar” directo: se exige elegir servicio primero
+    switch (buttonId) {
+      case 'inicio':
+        this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
+        await this.sendWelcomeButtons(from);
+        return '';
+
+      case 'ver_servicios':
+        await this.sendServicesAsButtons(from); // 3 por botón
+        await this.sendServiceOptions(from);    // lista completa
+        // botones de Inicio / Agendar
+        await this.sendButtons(from, '¿Qué deseas hacer ahora?', [
+          { type: 'reply', reply: { id: 'inicio', title: '🏠 Inicio' } },
+          { type: 'reply', reply: { id: 'agendar_cita', title: '📅 Agendar Cita' } },
+        ]);
+        return '';
+
       case 'agendar_cita':
         this.userStates.set(from, { ...us, state: 'awaiting_service_type', updatedAt: Date.now() });
         await this.sendMessage(from, 'Para agendar, primero elige el *tipo de servicio*.');
         return this.sendServiceOptions(from);
 
-      case 'agendar_si':
-        return this.handleAppointmentConfirmation('sí', from);
+      case 'hablar_asesor': {
+        const rows = this.ADVISOR_AREAS.map((a) => ({ id: a.id, title: a.title }));
+        await this.sendListMessage(from, '¿Con qué *área* quieres hablar?', 'Elegir área', [{ title: 'Áreas', rows }]);
+        return '';
+      }
 
-      case 'agendar_no':
-        this.userStates.set(from, { state: 'initial', updatedAt: Date.now() });
-        this.forms.delete(from);
-        return 'De acuerdo. Si necesitas algo más, escribe "hola".';
+      case 'horario':
+        await this.sendHours(from);
+        return '';
 
+      case 'ubicacion':
+        await this.sendLocation(from);
+        return '';
+
+      // Edición de formulario
       case 'confirm_yes':
         if (this.forms.has(from)) return this.finalizeFormConfirmation(from);
         return 'No encontré un formulario activo para confirmar. Escribe "hola" para comenzar.';
@@ -305,7 +415,8 @@ export class WhatsappService {
         return 'No encontré el formulario activo. Escribe "hola" para comenzar de nuevo.';
       }
 
-      default:
+      default: {
+        // Toca un servicio por botón
         if (buttonId.startsWith('serv_')) {
           const serviceType = buttonId.replace('serv_', '').replace(/_/g, ' ');
           const st = this.userStates.get(from) || { state: 'initial' };
@@ -315,14 +426,31 @@ export class WhatsappService {
           this.userStates.set(from, st);
           return this.sendNext7Days(from);
         }
+        // Área para asesor
+        if (buttonId.startsWith('area_')) {
+          const area = this.ADVISOR_AREAS.find((a) => a.id === buttonId);
+          if (!area) return 'Área no reconocida.';
+          await this.sendMessage(from, `Te comparto el contacto del *${area.name}* 👇`);
+          await this.sendContact(from, area.name, area.phone);
+          return '';
+        }
         return 'No reconozco ese comando. Escribe "hola" para comenzar.';
+      }
     }
   }
 
   private async handleInitialMessage(text: string, from: string): Promise<string> {
     const t = (text || '').toLowerCase().trim();
     if (/(^|\b)(hola|buenas|hello|hi|buenos días|buenas tardes|buenas noches|inicio|empezar)(\b|$)/i.test(t)) {
-      await this.sendWelcomeButtons(from);
+      // 1) Mensaje de bienvenida
+      await this.sendMessage(
+        from,
+        `👋 Bienvenido a *${COMPANY_NAME}*.\nAgenda en *2 minutos*: te mostramos *horarios reales* y recibes *PDF de confirmación*.`
+      );
+
+    await this.sendMainMenuList(from);
+
+
       this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
       return '';
     }
@@ -348,15 +476,23 @@ export class WhatsappService {
     return help[currentState] || 'Escribe "hola" para comenzar o "cancelar" para reiniciar.';
   }
 
-  // 🔒 Quita el botón de “Agendar” directo. Solo se muestra “Ver servicios”.
   private async sendWelcomeButtons(to: string) {
+    // Conservamos compat y mostramos sólo “Ver servicios” en este helper
     await this.sendButtons(
       to,
       `👋 Bienvenido a *${COMPANY_NAME}*.\nPara agendar, primero elige el *tipo de servicio*.`,
-      [
-        { type: 'reply', reply: { id: 'servicios', title: '🧾 Ver servicios' } },
-      ]
+      [{ type: 'reply', reply: { id: 'ver_servicios', title: '🧾 Ver servicios' } }]
     );
+  }
+
+  // Servicios por botón (3 más usados + “Más servicios”)
+  private async sendServicesAsButtons(to: string) {
+    await this.sendButtons(to, 'Servicios destacados:', [
+      { type: 'reply', reply: { id: 'serv_Asesoría_Tributaria', title: 'Tributario' } },
+      { type: 'reply', reply: { id: 'serv_Asesoría_Legal', title: 'Legal' } },
+      { type: 'reply', reply: { id: 'serv_Contabilidad', title: 'Contabilidad' } },
+    ]);
+    // Botón para abrir lista completa si hace falta (en la práctica ya envío lista abajo)
   }
 
   private async sendServiceOptions(to: string) {
@@ -370,12 +506,12 @@ export class WhatsappService {
         { id: 'serv_Sistemas_Informáticos', title: 'Sistemas Informáticos' },
       ],
     }];
-    await this.sendListMessage(to, 'Primero, selecciona el *tipo de servicio* que necesitas:', 'Ver servicios', sections);
+    await this.sendListMessage(to, 'Selecciona el *tipo de servicio* que necesitas:', 'Ver servicios', sections);
     return '';
   }
 
   private async sendNext7Days(to: string): Promise<string> {
-    const days = await this.sheets.getNextWorkingDays(7); // excluye domingos y feriados
+    const days = await this.sheets.getNextWorkingDays(7);
     const rows = days.map((d) => ({ id: `day_${d}`, title: d }));
     const sections = [{ title: 'Próximos 7 días hábiles', rows }];
     await this.sendListMessage(to, 'Elige el *día* de tu cita:', 'Elegir día', sections);
@@ -396,11 +532,8 @@ export class WhatsappService {
   }
 
   private async handleDaySelected(dayYMD: string, from: string): Promise<string> {
-    // valida que esté dentro de los 7 días ofrecidos
     const offered = await this.sheets.getNextWorkingDays(7);
-    if (!offered.includes(dayYMD)) {
-      return this.sendNext7Days(from);
-    }
+    if (!offered.includes(dayYMD)) return this.sendNext7Days(from);
 
     const st = this.userStates.get(from) || { state: 'awaiting_day_choice' };
     st.chosenDay = dayYMD;
@@ -414,7 +547,6 @@ export class WhatsappService {
       return this.sendNext7Days(from);
     }
 
-    // Guardamos horarios y mostramos primera página (lista, no botones)
     st.lastOfferedSlots = slots;
     st.slotsPage = 0;
     this.userStates.set(from, st);
@@ -427,7 +559,6 @@ export class WhatsappService {
     const st = this.userStates.get(from);
     if (!st || !st.chosenDay) return 'Primero elige un *día* de la lista.';
 
-    // Verifica de nuevo disponibilidad y reserva atómica (con servicio)
     const ok = await this.sheets.reserveSlotRow(row, from, st.serviceType || '').catch(() => false);
     if (!ok) {
       await this.sendMessage(from, 'Ese horario acaba de ocuparse 😕. Aquí tienes las *horas disponibles* actualizadas:');
@@ -438,7 +569,6 @@ export class WhatsappService {
       return '';
     }
 
-    // Guarda selección y pasa a formulario
     const rSlots = await this.sheets.getSlotsForDate(st.chosenDay);
     const chosen = rSlots.find((s) => s.row === row) || { row, date: st.chosenDay, time: '', label: '' };
 
@@ -472,20 +602,54 @@ export class WhatsappService {
   private startForm(from: string, serviceType: string, slots: SlotOffered[]) {
     const digits = this.onlyDigits(from);
     const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
-    this.forms.set(from, { idx: 0, data: { telefono: normalized }, schema: this.FORM_APPT, serviceType, slots, autofilledPhone: normalized });
+    this.forms.set(from, {
+      idx: 0,
+      data: { telefono: normalized },
+      schema: this.FORM_APPT,
+      serviceType,
+      slots,
+      autofilledPhone: normalized,
+      awaitingPhoneManual: false,
+    });
   }
+
   private async askNext(from: string) {
     const f = this.forms.get(from); if (!f) return;
-    const field = f.schema[f.idx]; await this.sendMessage(from, field.prompt({ autofilledPhone: f.autofilledPhone }));
+    const field = f.schema[f.idx];
+
+    // Paso especial para teléfono: enviamos botones Sí/No
+    if (field.key === 'telefono' && !f.awaitingPhoneManual) {
+      const msg = field.prompt({ autofilledPhone: f.autofilledPhone }) + '\n\nElige una opción:';
+      await this.sendButtons(from, msg, [
+        { type: 'reply', reply: { id: 'tel_yes', title: 'Sí, usar este' } },
+        { type: 'reply', reply: { id: 'tel_no', title: 'No, ingresar otro' } },
+      ]);
+      return;
+    }
+
+    await this.sendMessage(from, field.prompt({ autofilledPhone: f.autofilledPhone }));
   }
+
   private async handleFormInput(from: string, text: string): Promise<string> {
     const f = this.forms.get(from); if (!f) return '';
 
-    const ntext = this.normalize(text);
     const field = f.schema[f.idx];
-    let value = field.normalize ? field.normalize(text) : text;
-    if (field.key == 'telefono' && ['si', 'sí', 'ok', 'confirmo'].includes(ntext)) value = f.autofilledPhone;
 
+    // Si estamos esperando teléfono manual
+    if (field.key === 'telefono' && f.awaitingPhoneManual) {
+      const valid = field.validate(text);
+      if (valid !== true) return String(valid);
+      const normalized = field.normalize ? field.normalize(text) : text;
+      (f.data as any)[field.key] = String(normalized || '').trim();
+      f.awaitingPhoneManual = false;
+      f.idx++;
+      this.forms.set(from, f);
+      await this.askNext(from);
+      return '';
+    }
+
+    // Flujo normal
+    let value = field.normalize ? field.normalize(text) : text;
     const valid = field.validate(value);
     if (valid !== true) return String(valid);
 
