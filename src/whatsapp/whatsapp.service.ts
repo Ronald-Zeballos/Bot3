@@ -4,25 +4,109 @@ import * as FormData from 'form-data';
 import { SheetsService, SlotOffered } from '../sheets/sheets.service';
 import { PdfService } from '../pdf/pdf.service';
 
-const COMPANY_NAME = 'Russell Bedford Bolivia Encinas Auditores y Consultores SRL';
-const COMPANY_PHONE_E164 = '+59170400175'; // para vCard temporal
-const COMPANY_HOURS_TEXT = 'Nuestro horario de atención es de *Lunes a Viernes* de *08:00–12:00 y 14:30–18:30*';
-const COMPANY_MAPS_URL = 'https://maps.app.goo.gl/TU82fjJzHG3RBAbTA';
-const COMPANY_LOCATION_TEXT = 'Nuestra ubicación es: \n 📍 Russell Bedford Bolivia – Encinas Auditores y Consultores SRL\n' + COMPANY_MAPS_URL;
+/** =========================
+ *  Config Ace Hardware (chat)
+ *  ========================= */
+const ACE_NAME = 'Ace Hardware';
+const ACE_GREETING = '¡Hola! Bienvenido a Ace Hardware 💪\n¿En qué te podemos ayudar el día de hoy?';
+const BTN_HOME = { type: 'reply', reply: { id: 'home', title: '🏠 Menú Principal' } };
+const BTN_BACK = { type: 'reply', reply: { id: 'back', title: '🔙 Menú Anterior' } };
 
-type ClientData = { nombre?: string; telefono?: string; email?: string; servicio?: string; fecha?: string; hora?: string; };
+/** Links y textos del flujo */
+const ATENCION_SUCURSALES = [
+  {
+    id: 'suc_banzer',
+    title: '✅ Suc. Av. Banzer 5to y 6to anillo',
+    link: 'https://wa.link/7i0euc',
+  },
+  {
+    id: 'suc_doble_via',
+    title: '✅ Suc. Av. Doble vía la guardia 5to',
+    link: 'https://wa.link/g4a1a7',
+  },
+  {
+    id: 'suc_virgen_cotoca',
+    title: '✅ Suc. Av. Virgen de Cotoca 4to y 5to',
+    link: 'https://wa.link/08g18a',
+  },
+];
+
+const MINI_CUOTAS = [
+  {
+    id: 'mc_banzer',
+    title: 'Ej. Suc. Banzer 5to y 6to anillo',
+    link: 'https://wa.link/ez2y4f',
+  },
+  {
+    id: 'mc_doble_via',
+    title: 'Ej. Suc. Doble vía 5to anillo',
+    link: 'https://wa.link/w8e6f3',
+  },
+  {
+    id: 'mc_requisitos',
+    title: 'Requisitos Mini Cuotas',
+    link: 'https://www.dismac.com.bo/minicuotas.html',
+  },
+];
+
+const COTIZACION_EMPRESAS = [
+  { id: 'emp_asesor1', title: 'Asesor1', link: 'https://wa.link/w06z6f' },
+  { id: 'emp_asesor2', title: 'Asesor2', link: 'https://wa.link/c7c0nb' },
+];
+
+const DIRECCIONES_HORARIOS = {
+  text:
+    'Visítanos en nuestras 3 sucursales:\n' +
+    '📍 Av. Banzer, entre 5to y 6to anillo.\n' +
+    '   Ubicación: http://bit.ly/3RKFcy2\n\n' +
+    '📍 Av. Doble Vía La Guardia, entre 5to y 6to anillo.\n' +
+    '   Ubicación: https://bit.ly/UbicacionDobleVia\n\n' +
+    '📍 Av. Virgen de Cotoca, entre 4to y 5to anillo.\n' +
+    '   Ubicación: https://bit.ly/UbicacionVirgenDeCotoca\n\n' +
+    '🕥 Lunes a Viernes: 7:30 - 21:00 hrs\n' +
+    '🕥 Sábado y Domingo: 8:30 - 20:30 hrs',
+};
+
+const TRABAJO_COMUNIDAD = [
+  {
+    id: 'wrk_proveedor',
+    title: '✅ Ser proveedor o trabajar con nosotros',
+    text: 'Envíanos un correo ✉ contacto@acebolivia.com.bo',
+  },
+  {
+    id: 'wrk_canal',
+    title: '✅ Únete a nuestro canal de WhatsApp 🥰',
+    text:
+      'Entérate de novedades, talleres y ofertas exclusivas aquí:\n' +
+      'https://whatsapp.com/channel/0029VbAVvdP77qVLD6SpkJ3I',
+  },
+];
+
+/** ==========================================
+ *  ATENCIÓN: Mantengo tus dependencias y helpers
+ *  ========================================== */
+
+const COMPANY_NAME = 'Russell Bedford Bolivia Encinas Auditores y Consultores SRL'; // ⚠️ Se usa en PDF existente
+const COMPANY_PHONE_E164 = '+59170400175'; // para vCard temporal (mantengo)
+const COMPANY_HOURS_TEXT =
+  'Nuestro horario de atención es de *Lunes a Viernes* de *08:00–12:00 y 14:30–18:30*';
+const COMPANY_MAPS_URL = 'https://maps.app.goo.gl/TU82fjJzHG3RBAbTA';
+const COMPANY_LOCATION_TEXT =
+  'Nuestra ubicación es: \n 📍 Russell Bedford Bolivia – Encinas Auditores y Consultores SRL\n' + COMPANY_MAPS_URL;
+
+type ClientData = {
+  nombre?: string;
+  telefono?: string;
+  email?: string;
+  servicio?: string;
+  fecha?: string;
+  hora?: string;
+};
 
 type UserState = {
   state: string;
-  serviceType?: string;
-  chosenDay?: string;
-  appointmentDate?: string;
-  appointmentTime?: string;
-  lastOfferedSlots?: SlotOffered[];
-  slotsPage?: number;
+  lastMenu?: 'home' | 'atencion' | 'minicuotas' | 'empresas' | 'direccion' | 'trabajo';
   updatedAt?: number;
-  currentStep?: number;
-  totalSteps?: number;
 };
 
 type FieldKey = 'nombre' | 'telefono' | 'email';
@@ -42,6 +126,7 @@ export class WhatsappService {
     'Content-Type': 'application/json',
   };
 
+  // Mantengo estos catálogos y formularios por compatibilidad, aunque el flujo nuevo no agenda.
   private readonly SERVICE_CATALOG = [
     { id: 'tributario', label: 'Asesoría Tributaria', aliases: ['impuestos', 'fiscal', 'sat', 'tributaria'] },
     { id: 'legal', label: 'Asesoría Legal', aliases: ['contrato', 'abogado', 'ley', 'juridico', 'jurídico'] },
@@ -49,98 +134,16 @@ export class WhatsappService {
     { id: 'conta', label: 'Contabilidad', aliases: ['contable', 'libros', 'declaraciones', 'facturación', 'facturacion'] },
     { id: 'sistemas', label: 'Sistemas Informáticos', aliases: ['software', 'redes', 'informática', 'informatica', 'tecnología', 'tecnologia'] },
   ];
-    private async sendMainMenuList(to: string) {
-      const sections = [{
-        title: 'Menú principal',
-        rows: [
-          { id: 'ver_servicios', title: '🧾 Ver servicios' },
-          { id: 'agendar_cita',  title: '📅 Agendar cita' },
-          { id: 'hablar_asesor', title: '👤 Hablar con asesor' },
-          { id: 'horario',       title: '🕒 Horario' },
-          { id: 'ubicacion',     title: '📍 Ubicación' },
-        ],
-      }];
-      await this.sendListMessage(
-        to,
-        '¿En qué te puedo ayudar?',
-        'Abrir menú',
-        sections
-      );
-      return '';
-    }
-
-  // Áreas para "Hablar con asesor" (por ahora todos al mismo número)
-  private readonly ADVISOR_AREAS = [
-    { id: 'area_tributario', title: 'Tributario', name: 'Asesor de Tributario', phone: COMPANY_PHONE_E164 },
-    { id: 'area_legal',      title: 'Legal',      name: 'Asesor de Legal',      phone: COMPANY_PHONE_E164 },
-    { id: 'area_laboral',    title: 'Laboral',    name: 'Asesor de Laboral',    phone: COMPANY_PHONE_E164 },
-    { id: 'area_conta',      title: 'Contabilidad', name: 'Asesor de Contabilidad', phone: COMPANY_PHONE_E164 },
-    { id: 'area_sistemas',   title: 'Sistemas',   name: 'Asesor de Sistemas',   phone: COMPANY_PHONE_E164 },
-  ];
 
   private userStates = new Map<string, UserState>();
-  private forms = new Map<
-    string,
-    {
-      idx: number;
-      data: ClientData;
-      schema: FormField[];
-      serviceType: string;
-      slots: SlotOffered[];
-      autofilledPhone: string;
-      awaitingPhoneManual?: boolean; // ← si elige "No" en confirmar teléfono
-    }
-  >();
 
-  // === FORM ===
-  private readonly FORM_APPT: FormField[] = [
-    {
-      key: 'nombre',
-      prompt: () => 'Para agendar tu cita ¿Cuál es tu *nombre y apellido*?',
-      validate: (v) => {
-        const val = String(v || '').trim();
-        if (!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+$/.test(val)) return 'Usa solo letras y espacios (ej. María González).';
-        const parts = val.split(/\s+/).filter(Boolean);
-        if (parts.length < 2 || parts.some((p) => p.length < 2)) return 'Escribe nombre y apellido (ej. María González).';
-        return true;
-      },
-    },
-    {
-      key: 'telefono',
-      prompt: (ctx) =>
-        `Muchas gracias, ¿Confirmas este *número* para contactarte: *${ctx.autofilledPhone}*?`,
-      validate: (v) => {
-        const digits = String(v || '').replace(/[^\d]/g, '');
-        const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
-        if (!/^\d{8}$/.test(normalized)) return 'Número inválido. Usa 8 dígitos (ej. 65900645).';
-        return true;
-      },
-      normalize: (v) => {
-        const digits = String(v || '').replace(/[^\d]/g, '');
-        const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
-        return normalized;
-      },
-    },
-    {
-      key: 'email',
-      prompt: () => '¿Cuál es tu *email* para enviarte la confirmación?',
-      validate: (v) => {
-        const val = String(v || '').trim().toLowerCase();
-        return /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(val) || 'Email inválido (ej. nombre@ejemplo.com).';
-      },
-      normalize: (v) => String(v || '').trim().toLowerCase(),
-    },
-  ];
-
-  private readonly LOCAL_TZ = process.env.LOCAL_TZ || 'America/La_Paz';
-
+  // ====== Infra de envío (igual que tenías) ======
   constructor(private readonly sheets: SheetsService, private readonly pdf: PdfService) {
     setInterval(() => this.cleanOldStates(), 24 * 60 * 60 * 1000);
   }
 
-  /* ========== WhatsApp: envíos ========== */
   async sendMessage(to: string, message: string) {
-    const body = { messaging_product: 'whatsapp', to, type: 'text', text: { preview_url: false, body: message } };
+    const body = { messaging_product: 'whatsapp', to, type: 'text', text: { preview_url: true, body: message } };
     const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
     return data;
   }
@@ -180,7 +183,6 @@ export class WhatsappService {
     }
   }
 
-  // Enviar un contacto (vCard) — WhatsApp Cloud API "contacts"
   async sendContact(to: string, fullName: string, phoneE164: string) {
     const body = {
       messaging_product: 'whatsapp',
@@ -197,7 +199,6 @@ export class WhatsappService {
       const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
       return data;
     } catch {
-      // Fallback: solo texto
       return this.sendMessage(to, `📇 ${fullName}\n📞 ${phoneE164}`);
     }
   }
@@ -222,550 +223,233 @@ export class WhatsappService {
     return data;
   }
 
-  /* ========== Helpers ========== */
   private cleanOldStates() {
     const now = Date.now();
     const cutoff = now - 24 * 60 * 60 * 1000;
     for (const [k, v] of this.userStates.entries()) if ((v.updatedAt || 0) < cutoff) this.userStates.delete(k);
-    for (const [k] of this.forms.entries()) {
-      const st = this.userStates.get(k);
-      if (!st || (st.updatedAt || 0) < cutoff) this.forms.delete(k);
-    }
-  }
-  private onlyDigits(s = '') { return String(s || '').replace(/[^\d]/g, ''); }
-  private normalize(t = '') { return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim(); }
-
-  private findServiceFromText(text: string): { id: string; label: string } | null {
-    const n = this.normalize(text);
-    let best: { id: string; label: string; score: number } | null = null;
-    for (const s of this.SERVICE_CATALOG) {
-      let score = 0;
-      if (n.includes(this.normalize(s.label))) score += 3;
-      for (const a of s.aliases) if (n.includes(this.normalize(a))) score += 1;
-      if (score > 0 && (!best || score > best.score)) best = { id: s.id, label: s.label, score };
-    }
-    return best ? { id: best.id, label: best.label } : null;
   }
 
-  private todayYMD(): { y: number; m: number; day: number } {
-    try {
-      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: this.LOCAL_TZ, year: 'numeric', month: '2-digit', day: '2-digit' })
-        .formatToParts(new Date());
-      const get = (t: any) => parts.find((p) => p.type === t)?.value || '';
-      return { y: +get('year'), m: +get('month'), day: +get('day') };
-    } catch {
-      const now = new Date(); return { y: now.getFullYear(), m: now.getMonth() + 1, day: now.getDate() };
-    }
+  private normalize(t = '') {
+    return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
   }
 
-  /* ========== Paginación de horarios ========== */
-  private buildSlotPages(slots: SlotOffered[], pageSize = 9): SlotOffered[][] {
-    const pages: SlotOffered[][] = [];
-    for (let i = 0; i < slots.length; i += pageSize) pages.push(slots.slice(i, i + pageSize));
-    return pages;
+  /** =============================
+   *  Menú principal (Lista)
+   *  ============================= */
+  private async sendAceMainMenu(to: string) {
+    const sections = [
+      {
+        title: 'Menú principal',
+        rows: [
+          { id: 'm_atencion', title: '1. Atención al cliente' },
+          { id: 'm_minicuotas', title: '2. Mini Cuotas' },
+          { id: 'm_empresas', title: '3. Cotización de Empresas' },
+          { id: 'm_direccion', title: '4. Dirección y horarios' },
+          { id: 'm_trabajo', title: '5. ¿Trabajar / Proveedor / Comunidad?' },
+        ],
+      },
+    ];
+    await this.sendListMessage(to, 'Selecciona tu consulta escribiendo el número o tocando:', 'Abrir menú', sections);
   }
 
-  private async sendSlotsPaged(to: string, dayYMD: string, slots: SlotOffered[], pageIdx = 0) {
-    const pages = this.buildSlotPages(slots, 9);
-    const safePage = Math.max(0, Math.min(pageIdx, pages.length - 1));
-    const page = pages[safePage] || [];
+  /** =============================
+   *  Submenús
+   *  ============================= */
+  private async sendSubmenuAtencion(to: string) {
+    const rows = ATENCION_SUCURSALES.map((s) => ({ id: `atn_${s.id}`, title: s.title }));
+    await this.sendListMessage(to, 'Selecciona tu sucursal:', 'Ver sucursales', [{ title: 'Atención al cliente', rows }]);
+    await this.sendButtons(to, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
+  }
 
-    const rows = page.map((s) => ({ id: `slot_${s.row}`, title: s.time }));
-    if (pages.length > 1 && safePage < pages.length - 1) rows.push({ id: `more_${safePage + 1}`, title: 'Siguiente ▷' });
-    if (pages.length > 1 && safePage > 0) {
-      rows.unshift({ id: `more_${safePage - 1}`, title: '◁ Anterior' });
-      if (rows.length > 10) rows.splice(rows.length - 2, 1);
-    }
+  private async sendSubmenuMiniCuotas(to: string) {
+    const rows = MINI_CUOTAS.map((m) => ({ id: `mc_${m.id}`, title: m.title }));
+    await this.sendListMessage(to, 'Selecciona tu ejecutivo o ver requisitos:', 'Ver opciones', [{ title: 'Mini Cuotas', rows }]);
+    await this.sendButtons(to, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
+  }
 
+  private async sendEmpresas(to: string) {
+    const rows = COTIZACION_EMPRESAS.map((c) => ({ id: `emp_${c.id}`, title: c.title }));
+    await this.sendListMessage(to, '✅ Comunícate con un asesor:', 'Ver asesores', [{ title: 'Cotización de Empresas', rows }]);
+    await this.sendButtons(to, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
+  }
+
+  private async sendDireccionHorarios(to: string) {
+    await this.sendMessage(to, DIRECCIONES_HORARIOS.text);
+    await this.sendButtons(to, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
+  }
+
+  private async sendTrabajoComunidad(to: string) {
+    const rows = TRABAJO_COMUNIDAD.map((t) => ({ id: `wrk_${t.id}`, title: t.title }));
     await this.sendListMessage(
       to,
-      `📅 *${dayYMD}* — elige una *hora* disponible:${pages.length > 1 ? `\n(Página ${safePage + 1}/${pages.length})` : ''}`,
-      'Elegir hora',
-      [{ title: `Horarios para ${dayYMD}`, rows }]
+      'Trabaja con nosotros o únete a nuestra comunidad',
+      'Ver opciones',
+      [{ title: 'Oportunidades y Comunidad', rows }]
     );
+    await this.sendButtons(to, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
   }
 
-  /* ========== Bloques de mensajes cortos ========== */
+  /** =============================
+   *  Entradas de texto y botones
+   *  ============================= */
+  async generarRespuesta(text: string, from: string, buttonId?: string): Promise<string> {
+    const st = this.userStates.get(from) || { state: 'home' as const, lastMenu: 'home' as const };
+    st.updatedAt = Date.now();
+    this.userStates.set(from, st);
+
+    // Reacciones globales
+    const t = (text || '').trim().toLowerCase();
+    if (!buttonId && /(menu|inicio|hola|buenas|hello|hi)/i.test(t)) {
+      await this.sendMessage(from, ACE_GREETING);
+      await this.sendAceMainMenu(from);
+      this.userStates.set(from, { state: 'home', lastMenu: 'home', updatedAt: Date.now() });
+      return '';
+    }
+    if (!buttonId && /^\d\b/.test(t)) {
+      // Soporta "1", "2", ..., "5"
+      const num = t.match(/^\d+/)?.[0];
+      if (num) {
+        const map: Record<string, string> = {
+          '1': 'm_atencion',
+          '2': 'm_minicuotas',
+          '3': 'm_empresas',
+          '4': 'm_direccion',
+          '5': 'm_trabajo',
+        };
+        buttonId = map[num];
+      }
+    }
+
+    if (buttonId) return this.handleButton(from, buttonId);
+
+    // Fallback: recuerda comando
+    return 'Escribe *hola* para ver el menú principal o envía un número (1-5).';
+  }
+
+  private async handleButton(from: string, id: string): Promise<string> {
+    // Navegación base
+    if (id === 'home') {
+      await this.sendAceMainMenu(from);
+      this.userStates.set(from, { state: 'home', lastMenu: 'home', updatedAt: Date.now() });
+      return '';
+    }
+    if (id === 'back') {
+      const prev = this.userStates.get(from)?.lastMenu || 'home';
+      return this.navigateToMenu(from, prev);
+    }
+
+    // Menú principal
+    switch (id) {
+      case 'm_atencion':
+        await this.sendSubmenuAtencion(from);
+        this.userStates.set(from, { state: 'atencion', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'm_minicuotas':
+        await this.sendSubmenuMiniCuotas(from);
+        this.userStates.set(from, { state: 'minicuotas', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'm_empresas':
+        await this.sendEmpresas(from);
+        this.userStates.set(from, { state: 'empresas', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'm_direccion':
+        await this.sendDireccionHorarios(from);
+        this.userStates.set(from, { state: 'direccion', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'm_trabajo':
+        await this.sendTrabajoComunidad(from);
+        this.userStates.set(from, { state: 'trabajo', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+    }
+
+    // Submenú: Atención (sucursales)
+    if (id.startsWith('atn_')) {
+      const suc = ATENCION_SUCURSALES.find((s) => `atn_${s.id}` === id);
+      if (!suc) return 'Sucursal no encontrada.';
+      await this.sendMessage(from, `${suc.title}\nLink de WhatsApp: ${suc.link}`);
+      await this.sendButtons(from, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
+      this.userStates.set(from, { state: 'atencion', lastMenu: 'home', updatedAt: Date.now() });
+      return '';
+    }
+
+    // Submenú: Mini Cuotas
+    if (id.startsWith('mc_')) {
+      const opt = MINI_CUOTAS.find((m) => `mc_${m.id}` === id);
+      if (!opt) return 'Opción no encontrada.';
+      const label = opt.title.startsWith('Requisitos') ? 'Link de los requisitos' : 'Link del ejecutivo';
+      await this.sendMessage(from, `${opt.title}\n${label}: ${opt.link}`);
+      await this.sendButtons(from, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
+      this.userStates.set(from, { state: 'minicuotas', lastMenu: 'home', updatedAt: Date.now() });
+      return '';
+    }
+
+    // Submenú: Empresas
+    if (id.startsWith('emp_emp_')) {
+      // Normalización doble por IDs anidados
+      id = id.replace('emp_', '');
+    }
+    if (id.startsWith('emp_')) {
+      const ases = COTIZACION_EMPRESAS.find((e) => `emp_${e.id}` === id);
+      if (!ases) return 'Asesor no encontrado.';
+      await this.sendMessage(from, `✅ Comunícate con un asesor:\n${ases.title}: ${ases.link}`);
+      await this.sendButtons(from, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
+      this.userStates.set(from, { state: 'empresas', lastMenu: 'home', updatedAt: Date.now() });
+      return '';
+    }
+
+    // Submenú: Trabajo / Comunidad
+    if (id.startsWith('wrk_wrk_')) {
+      id = id.replace('wrk_', '');
+    }
+    if (id.startsWith('wrk_')) {
+      const w = TRABAJO_COMUNIDAD.find((x) => `wrk_${x.id}` === id);
+      if (!w) return 'Opción no encontrada.';
+      await this.sendMessage(from, `${w.title}\n${w.text}`);
+      await this.sendButtons(from, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
+      this.userStates.set(from, { state: 'trabajo', lastMenu: 'home', updatedAt: Date.now() });
+      return '';
+    }
+
+    return 'No reconozco esa opción. Escribe "hola" para ver el menú.';
+  }
+
+  private async navigateToMenu(to: string, menu: UserState['lastMenu']) {
+    switch (menu) {
+      case 'home':
+      default:
+        await this.sendAceMainMenu(to);
+        this.userStates.set(to, { state: 'home', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'atencion':
+        await this.sendSubmenuAtencion(to);
+        this.userStates.set(to, { state: 'atencion', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'minicuotas':
+        await this.sendSubmenuMiniCuotas(to);
+        this.userStates.set(to, { state: 'minicuotas', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'empresas':
+        await this.sendEmpresas(to);
+        this.userStates.set(to, { state: 'empresas', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'direccion':
+        await this.sendDireccionHorarios(to);
+        this.userStates.set(to, { state: 'direccion', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+      case 'trabajo':
+        await this.sendTrabajoComunidad(to);
+        this.userStates.set(to, { state: 'trabajo', lastMenu: 'home', updatedAt: Date.now() });
+        return '';
+    }
+  }
+
+  /** =============================
+   *  (Compat) Horario / Ubicación previos
+   *  ============================= */
   private async sendHours(to: string) {
     return this.sendMessage(to, COMPANY_HOURS_TEXT);
   }
-
   private async sendLocation(to: string) {
     return this.sendMessage(to, COMPANY_LOCATION_TEXT);
-  }
-
-  /* ========== Lógica principal ========== */
-  async generarRespuesta(text: string, from: string, buttonId?: string): Promise<string> {
-    let us = this.userStates.get(from) || { state: 'initial' };
-    us.updatedAt = Date.now();
-    this.userStates.set(from, us);
-
-    // Si el flujo fue finalizado, cualquier nuevo mensaje reenvía saludo simple y menú (sin bienvenida larga)
-    if (!buttonId && us.state === 'ended') {
-      await this.sendMessage(from, 'Hola, soy el Asistente Virtual de Russell Bedford Bolivia Encinas Auditores y Consultores SRL.');
-      await this.sendMainMenuList(from);
-      this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
-      return '';
-    }
-
-    const cleanedText = (text || '').trim().toLowerCase();
-
-    if (cleanedText.includes('cancelar')) {
-      this.userStates.set(from, { state: 'initial', updatedAt: Date.now() });
-      this.forms.delete(from);
-      return 'Has cancelado el proceso actual. Escribe "hola" para comenzar de nuevo.';
-    }
-    if (cleanedText.includes('ayuda')) return this.getHelpMessage(us.state);
-
-    if (buttonId) return this.handleButtonAction(buttonId, from, us);
-    if (this.forms.has(from)) return this.handleFormInput(from, text);
-
-    switch (us.state) {
-      case 'awaiting_service_type':         return this.handleServiceSelection(text, from);
-      case 'awaiting_day_choice':           return 'Selecciona un *día* desde la lista que te envié.';
-      case 'awaiting_time_choice':          return 'Elige una *hora* desde la lista enviada.';
-      case 'awaiting_appointment_confirmation': return this.handleAppointmentConfirmation(text, from);
-      default:                               return this.handleInitialMessage(text, from);
-    }
-  }
-
-  private async handleButtonAction(buttonId: string, from: string, us: UserState): Promise<string> {
-    // Día/Hora
-    if (buttonId.startsWith('day_')) return this.handleDaySelected(buttonId.substring(4), from);
-    if (buttonId.startsWith('slot_')) return this.handleSlotRowSelected(parseInt(buttonId.substring(5), 10), from);
-    if (buttonId.startsWith('more_')) {
-      const idx = parseInt(buttonId.substring(5), 10) || 0;
-      const st = this.userStates.get(from);
-      if (!st?.chosenDay || !st.lastOfferedSlots?.length) return 'Primero elige un *día* de la lista.';
-      st.slotsPage = idx; this.userStates.set(from, st);
-      await this.sendSlotsPaged(from, st.chosenDay, st.lastOfferedSlots, idx);
-      return '';
-    }
-
-    // Confirmación de teléfono
-    if (buttonId === 'tel_yes' || buttonId === 'tel_no') {
-      const f = this.forms.get(from);
-      if (!f) return '';
-      if (buttonId === 'tel_yes') {
-        // usar el autofilled y avanzar
-        (f.data as any)['telefono'] = f.autofilledPhone;
-        f.awaitingPhoneManual = false;
-        f.idx++;
-        this.forms.set(from, f);
-        await this.askNext(from);
-        return '';
-      } else {
-        // pedirlo manualmente
-        f.awaitingPhoneManual = true;
-        this.forms.set(from, f);
-        await this.sendMessage(from, 'Por favor, escribe tu *número de 8 dígitos* (se admite con o sin +591).');
-        return '';
-      }
-    }
-
-    switch (buttonId) {
-      case 'inicio':
-        this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
-        await this.sendWelcomeButtons(from);
-        return '';
-
-      case 'ver_servicios': {
-        // 1) Enviar servicios en texto tipo lista
-        const listText =
-          'Nuestros servicios:\n' +
-          this.SERVICE_CATALOG.map(s => `- ${s.label}`).join('\n');
-        await this.sendMessage(from, listText);
-
-        // 2) Ofrecer botones: primero Agendar, luego Finalizar
-        await this.sendButtons(from, '¿Qué deseas hacer ahora?', [
-          { type: 'reply', reply: { id: 'agendar_cita', title: '📅 Agendar Cita' } },
-          { type: 'reply', reply: { id: 'finalizar', title: '🏁 Finalizar' } },
-        ]);
-        return '';
-      }
-
-      case 'finalizar':
-        await this.sendMessage(from, 'Gracias por escribirnos. ¡Quedamos atentos a cualquier duda!');
-        this.userStates.set(from, { state: 'ended', updatedAt: Date.now() });
-        return '';
-
-      case 'agendar_cita':
-        this.userStates.set(from, { ...us, state: 'awaiting_service_type', updatedAt: Date.now() });
-        await this.sendMessage(from, 'Para agendar, primero elige el *tipo de servicio*.');
-        return this.sendServiceOptions(from);
-
-      case 'hablar_asesor': {
-        const rows = this.ADVISOR_AREAS.map((a) => ({ id: a.id, title: a.title }));
-        await this.sendListMessage(from, '¿Con qué *área* quieres hablar?', 'Elegir área', [{ title: 'Áreas', rows }]);
-        return '';
-      }
-
-      case 'horario':
-        await this.sendHours(from);
-        return '';
-
-      case 'ubicacion':
-        await this.sendLocation(from);
-        // Pregunta de continuación Sí/No
-        await this.sendButtons(from, '¿Hay algo más en que te pueda ayudar?', [
-          { type: 'reply', reply: { id: 'more_yes', title: 'Sí' } },
-          { type: 'reply', reply: { id: 'more_no', title: 'No' } },
-        ]);
-        return '';
-
-      // Edición de formulario
-      case 'confirm_yes':
-        if (this.forms.has(from)) return this.finalizeFormConfirmation(from);
-        return 'No encontré un formulario activo para confirmar. Escribe "hola" para comenzar.';
-
-      case 'confirm_edit':
-        await this.sendButtons(from, '¿Qué te gustaría *editar*?', [
-          { type: 'reply', reply: { id: 'edit_nombre', title: '✏️ Nombre' } },
-          { type: 'reply', reply: { id: 'edit_telefono', title: '✏️ Teléfono' } },
-          { type: 'reply', reply: { id: 'edit_email', title: '✏️ Email' } },
-        ]);
-        return '';
-
-      case 'edit_nombre':
-      case 'edit_telefono':
-      case 'edit_email': {
-        const key = buttonId.replace('edit_', '') as FieldKey;
-        const f = this.forms.get(from);
-        if (f) {
-          const idx = f.schema.findIndex((s) => s.key === key);
-          if (idx >= 0) { f.idx = idx; await this.askNext(from); return ''; }
-        }
-        return 'No encontré el formulario activo. Escribe "hola" para comenzar de nuevo.';
-      }
-
-      case 'more_yes':
-        // Mostrar menú sin mensaje de bienvenida
-        await this.sendMainMenuList(from);
-        this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
-        return '';
-
-      case 'more_no':
-        await this.sendMessage(from, 'Gracias por escribirnos. ¡Quedamos atentos a cualquier duda!');
-        this.userStates.set(from, { state: 'ended', updatedAt: Date.now() });
-        return '';
-
-      default: {
-        // Toca un servicio por botón
-        if (buttonId.startsWith('serv_')) {
-          const serviceType = buttonId.replace('serv_', '').replace(/_/g, ' ');
-          const st = this.userStates.get(from) || { state: 'initial' };
-          st.serviceType = serviceType;
-          st.state = 'awaiting_day_choice';
-          st.currentStep = 1; st.totalSteps = 5; st.updatedAt = Date.now();
-          this.userStates.set(from, st);
-          return this.sendNext7Days(from);
-        }
-        // Área para asesor
-        if (buttonId.startsWith('area_')) {
-          const area = this.ADVISOR_AREAS.find((a) => a.id === buttonId);
-          if (!area) return 'Área no reconocida.';
-          await this.sendMessage(from, `Te comparto el contacto del *${area.name}* 👇`);
-          await this.sendContact(from, area.name, area.phone);
-          // Pregunta de continuación Sí/No
-          await this.sendButtons(from, '¿Hay algo más en que te pueda ayudar?', [
-            { type: 'reply', reply: { id: 'more_yes', title: 'Sí' } },
-            { type: 'reply', reply: { id: 'more_no', title: 'No' } },
-          ]);
-          return '';
-        }
-        return 'No reconozco ese comando. Escribe "hola" para comenzar.';
-      }
-    }
-  }
-
-  private async handleInitialMessage(text: string, from: string): Promise<string> {
-    const t = (text || '').toLowerCase().trim();
-    if (/(^|\b)(hola|buenas|hello|hi|buenos días|buenas tardes|buenas noches|inicio|empezar)(\b|$)/i.test(t)) {
-      // 1) Mensaje de bienvenida
-      await this.sendMessage(
-        from,
-        `Hola, soy el *Asistente Virtual* \n de *${COMPANY_NAME}*.`
-      );
-
-    await this.sendMainMenuList(from);
-
-
-      this.userStates.set(from, { state: 'awaiting_service_type', updatedAt: Date.now() });
-      return '';
-    }
-    if (t.includes('gracias')) return '¡Gracias a ti! ¿Necesitas algo más? Escribe "hola" para volver al menú.';
-    if (/(adiós|chao|hasta luego|bye)/i.test(t)) return '¡Hasta luego! Si necesitas algo más, escribe "hola".';
-
-    const matched = this.findServiceFromText(t);
-    if (matched) {
-      const st = { state: 'awaiting_day_choice', serviceType: matched.label, currentStep: 1, totalSteps: 5, updatedAt: Date.now() } as UserState;
-      this.userStates.set(from, st);
-      return this.sendNext7Days(from);
-    }
-    return '🤔 No entendí tu mensaje. Escribe "hola" para empezar o toca *Ver servicios*.';
-  }
-
-  private getHelpMessage(currentState: string): string {
-    const help: Record<string, string> = {
-      initial: 'Escribe "hola" para comenzar.',
-      awaiting_service_type: 'Selecciona un servicio de la lista.',
-      awaiting_day_choice: 'Elige un día (sólo próximos 7 días hábiles).',
-      awaiting_time_choice: 'Elige la hora disponible del día que seleccionaste.',
-    };
-    return help[currentState] || 'Escribe "hola" para comenzar o "cancelar" para reiniciar.';
-  }
-
-  private async sendWelcomeButtons(to: string) {
-    // Conservamos compat y mostramos sólo “Ver servicios” en este helper
-    await this.sendButtons(
-      to,
-      `👋 Bienvenido a *${COMPANY_NAME}*.\nPara agendar, primero elige el *tipo de servicio*.`,
-      [{ type: 'reply', reply: { id: 'ver_servicios', title: '🧾 Ver servicios' } }]
-    );
-  }
-
-
-  private async sendServiceOptions(to: string) {
-    const sections = [{
-      title: 'Nuestros Servicios',
-      rows: [
-        { id: 'serv_Asesoría_Tributaria', title: 'Asesoría Tributaria' },
-        { id: 'serv_Asesoría_Legal', title: 'Asesoría Legal' },
-        { id: 'serv_Asesoría_Laboral', title: 'Asesoría Laboral' },
-        { id: 'serv_Contabilidad', title: 'Contabilidad' },
-        { id: 'serv_Sistemas_Informáticos', title: 'Sistemas Informáticos' },
-      ],
-    }];
-    await this.sendListMessage(to, 'Selecciona el *tipo de servicio* que necesitas:', 'Ver servicios', sections);
-    return '';
-  }
-
-  private async sendNext7Days(to: string): Promise<string> {
-    const days = await this.sheets.getNextWorkingDays(7);
-    const rows = days.map((d) => ({ id: `day_${d}`, title: d }));
-    const sections = [{ title: 'Próximos 7 días hábiles', rows }];
-    await this.sendListMessage(to, 'Elige el *día* de tu cita:', 'Elegir día', sections);
-    return '';
-  }
-
-  private async handleServiceSelection(text: string, from: string): Promise<string> {
-    if (['ver servicios', 'servicios', 'agendar cita', 'agendar_cita'].includes(text.toLowerCase().trim())) {
-      return this.sendServiceOptions(from);
-    }
-    const matched = this.findServiceFromText(text);
-    const st = this.userStates.get(from) || { state: 'awaiting_service_type' };
-    st.serviceType = matched ? matched.label : text;
-    st.state = 'awaiting_day_choice';
-    st.currentStep = 1; st.totalSteps = 5; st.updatedAt = Date.now();
-    this.userStates.set(from, st);
-    return this.sendNext7Days(from);
-  }
-
-  private async handleDaySelected(dayYMD: string, from: string): Promise<string> {
-    const offered = await this.sheets.getNextWorkingDays(7);
-    if (!offered.includes(dayYMD)) return this.sendNext7Days(from);
-
-    const st = this.userStates.get(from) || { state: 'awaiting_day_choice' };
-    st.chosenDay = dayYMD;
-    st.state = 'awaiting_time_choice';
-    st.currentStep = 2; st.updatedAt = Date.now();
-    this.userStates.set(from, st);
-
-    const slots = await this.sheets.getSlotsForDate(dayYMD);
-    if (!slots.length) {
-      await this.sendMessage(from, `No hay horarios disponibles para *${dayYMD}*. Elige otro día.`);
-      return this.sendNext7Days(from);
-    }
-
-    st.lastOfferedSlots = slots;
-    st.slotsPage = 0;
-    this.userStates.set(from, st);
-
-    await this.sendSlotsPaged(from, dayYMD, slots, 0);
-    return '';
-  }
-
-  private async handleSlotRowSelected(row: number, from: string): Promise<string> {
-  const st = this.userStates.get(from);
-  if (!st || !st.chosenDay) return 'Primero elige un *día* de la lista.';
-
-  // 👈 Toma el horario ELEGIDO antes de reservar (porque luego ya no aparece como DISPONIBLE)
-  const chosenFromState =
-    st.lastOfferedSlots?.find((s) => s.row === row) ||
-    null;
-
-  // Reserva atómica
-  const ok = await this.sheets.reserveSlotRow(row, from, st.serviceType || '').catch(() => false);
-  if (!ok) {
-    await this.sendMessage(from, 'Ese horario acaba de ocuparse 😕. Aquí tienes las *horas disponibles* actualizadas:');
-    const slots = await this.sheets.getSlotsForDate(st.chosenDay);
-    if (!slots.length) return this.sendNext7Days(from);
-    st.lastOfferedSlots = slots; st.slotsPage = 0; this.userStates.set(from, st);
-    await this.sendSlotsPaged(from, st.chosenDay, slots, 0);
-    return '';
-  }
-
-  const chosen = chosenFromState || { row, date: st.chosenDay, time: '', label: '' };
-
-  st.appointmentDate = st.chosenDay;
-  st.appointmentTime = chosen.time;
-  st.state = 'collecting_form';
-  st.currentStep = 3; st.updatedAt = Date.now();
-  this.userStates.set(from, st);
-
-  this.startForm(from, st.serviceType || 'Servicio', [chosen]);
-  await this.askNext(from);
-  return '';
-}
-
-  private async handleAppointmentConfirmation(text: string, from: string): Promise<string> {
-    const t = text.toLowerCase().trim();
-    if (/(^|\b)(si|sí|agendar_si|sí, agendar|si, agendar)/i.test(t)) {
-      const st = this.userStates.get(from) || { state: 'awaiting_appointment_confirmation' };
-      st.state = 'awaiting_service_type';
-      st.currentStep = 1; st.totalSteps = 5; st.updatedAt = Date.now();
-      this.userStates.set(from, st);
-      return this.sendServiceOptions(from);
-    } else {
-      this.userStates.set(from, { state: 'initial', updatedAt: Date.now() });
-      this.forms.delete(from);
-      return 'De acuerdo. Si necesitas algo más escribe "hola".';
-    }
-  }
-
-  /* ========== Form Engine ========== */
-  private startForm(from: string, serviceType: string, slots: SlotOffered[]) {
-    const digits = this.onlyDigits(from);
-    const normalized = digits.startsWith('591') ? digits.slice(3) : digits;
-    this.forms.set(from, {
-      idx: 0,
-      data: { telefono: normalized },
-      schema: this.FORM_APPT,
-      serviceType,
-      slots,
-      autofilledPhone: normalized,
-      awaitingPhoneManual: false,
-    });
-  }
-
-  private async askNext(from: string) {
-    const f = this.forms.get(from); if (!f) return;
-    const field = f.schema[f.idx];
-
-    // Paso especial para teléfono: enviamos botones Sí/No
-    if (field.key === 'telefono' && !f.awaitingPhoneManual) {
-      const msg = field.prompt({ autofilledPhone: f.autofilledPhone }) + '\n\nElige una opción:';
-      await this.sendButtons(from, msg, [
-        { type: 'reply', reply: { id: 'tel_yes', title: 'Sí, usar este' } },
-        { type: 'reply', reply: { id: 'tel_no', title: 'No, ingresar otro' } },
-      ]);
-      return;
-    }
-
-    await this.sendMessage(from, field.prompt({ autofilledPhone: f.autofilledPhone }));
-  }
-
-  private async handleFormInput(from: string, text: string): Promise<string> {
-    const f = this.forms.get(from); if (!f) return '';
-
-    const field = f.schema[f.idx];
-
-    // Si estamos esperando teléfono manual
-    if (field.key === 'telefono' && f.awaitingPhoneManual) {
-      const valid = field.validate(text);
-      if (valid !== true) return String(valid);
-      const normalized = field.normalize ? field.normalize(text) : text;
-      (f.data as any)[field.key] = String(normalized || '').trim();
-      f.awaitingPhoneManual = false;
-      f.idx++;
-      this.forms.set(from, f);
-      await this.askNext(from);
-      return '';
-    }
-
-    // Flujo normal
-    let value = field.normalize ? field.normalize(text) : text;
-    const valid = field.validate(value);
-    if (valid !== true) return String(valid);
-
-    (f.data as any)[field.key] = String(value || '').trim();
-    f.idx++;
-
-    if (f.idx >= f.schema.length) {
-      const resumen =
-        `📋 *Revisa tu solicitud:*\n\n` +
-        `🧾 *Servicio:* ${f.serviceType}\n` +
-        `📅 *Fecha:* ${f.slots[0]?.date}\n` +
-        `🕒 *Hora:* ${f.slots[0]?.time}\n\n` +
-        `👤 *Nombre:* ${f.data.nombre}\n` +
-        `📞 *Teléfono:* ${f.data.telefono}\n` +
-        `✉️ *Email:* ${f.data.email}\n\n` +
-        `¿Confirmas para guardar en agenda?`;
-      await this.sendButtons(from, resumen, [
-        { type: 'reply', reply: { id: 'confirm_yes', title: '✅ Confirmar' } },
-        { type: 'reply', reply: { id: 'confirm_edit', title: '✏️ Editar' } },
-      ]);
-      return '';
-    }
-
-    await this.askNext(from);
-    return '';
-  }
-
-  private async finalizeFormConfirmation(from: string): Promise<string> {
-    const f = this.forms.get(from);
-    const st = this.userStates.get(from);
-    if (!f || !st) return 'No tengo registro de tu solicitud. Escribe "hola" para comenzar.';
-
-    try {
-      await this.sheets.appendAppointmentRow({
-        telefono: f.data.telefono!, nombre: f.data.nombre!, email: f.data.email!,
-        servicio: f.serviceType || 'Sin especificar',
-        fecha: f.slots[0].date, hora: f.slots[0].time, slotRow: f.slots[0].row,
-      });
-    } catch {
-      return 'Ocurrió un problema al guardar tu cita. Intenta nuevamente más tarde o llama al +591 65900645.';
-    }
-
-    await this.sendMessage(from,
-      `✅ *¡Cita confirmada!*\n\nGracias por agendar con *${COMPANY_NAME}*.\n` +
-      `Te esperamos el ${f.slots[0].date} a las ${f.slots[0].time}.\n\nSi necesitas cancelar o reprogramar, contáctanos al +591 65900645.`
-    );
-
-    try {
-      const { buffer, filename } = await this.pdf.generateConfirmationPDFBuffer({
-        clientData: f.data, serviceType: f.serviceType, appointmentDate: f.slots[0].date, appointmentTime: f.slots[0].time,
-      });
-      let sentOk = false;
-      if (this.pdf.isS3Enabled()) {
-        try {
-          const url = await this.pdf.uploadToS3(buffer, filename, 'application/pdf');
-          await this.sendDocumentByLink(from, url, filename, `Comprobante de cita - ${COMPANY_NAME}`);
-          sentOk = true;
-        } catch (e){
-          console.error('Error subiendo a S3 o enviando por link:', (e as any)?.response?.data || e);
-        }
-      }
-
-       if (!sentOk) {
-          try {
-            const mediaId = await this.uploadMediaToWhatsApp(buffer, filename, 'application/pdf');
-            await this.sendDocumentByMediaId(from, mediaId, filename, `Comprobante de cita - ${COMPANY_NAME}`);
-            sentOk = true;
-          } catch (e) {
-            console.error('Error subiendo/enviando PDF por mediaId:', (e as any)?.response?.data || e);
-          }
-        }
-
-        if (!sentOk) {
-          await this.sendMessage(from, 'No pude adjuntar el PDF ahora mismo. Te lo reenviaré en breve o puedes solicitarlo respondiendo "enviar pdf".');
-        }
-      } catch (e) {
-        console.error('Error generando el PDF:', (e as any)?.message || e);
-      }
-
-    this.forms.delete(from);
-    this.userStates.set(from, { state: 'initial', updatedAt: Date.now() });
-    return '¿Necesitas algo más? Escribe "hola" para volver al menú.';
   }
 }
