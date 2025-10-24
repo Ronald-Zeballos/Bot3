@@ -294,7 +294,8 @@ export class WhatsappService {
   }
 
   private async sendEmpresas(to: string) {
-    const rows = COTIZACION_EMPRESAS.map((c) => ({ id: `emp_${c.id}`, title: c.title }));
+    // Usamos los IDs tal como están en el array (emp_asesor1, emp_asesor2)
+    const rows = COTIZACION_EMPRESAS.map((c) => ({ id: c.id, title: c.title }));
     await this.sendListMessage(to, '✅ Comunícate con un asesor:', 'Ver asesores', [{ title: 'Cotización de Empresas', rows }]);
     await this.sendButtons(to, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
   }
@@ -305,7 +306,8 @@ export class WhatsappService {
   }
 
   private async sendTrabajoComunidad(to: string) {
-    const rows = TRABAJO_COMUNIDAD.map((t) => ({ id: `wrk_${t.id}`, title: t.title }));
+    // Usamos los IDs tal como están (wrk_proveedor, wrk_canal)
+    const rows = TRABAJO_COMUNIDAD.map((t) => ({ id: t.id, title: t.title }));
     await this.sendListMessage(
       to,
       'Trabaja con nosotros o únete a nuestra comunidad',
@@ -411,12 +413,9 @@ export class WhatsappService {
       return '';
     }
 
-    // Submenú: Empresas
-    if (id.startsWith('emp_emp_')) {
-      id = id.replace('emp_', '');
-    }
+    // Submenú: Empresas (IDs directos emp_asesorX)
     if (id.startsWith('emp_')) {
-      const ases = COTIZACION_EMPRESAS.find((e) => `emp_${e.id}` === id);
+      const ases = COTIZACION_EMPRESAS.find((e) => e.id === id);
       if (!ases) return 'Asesor no encontrado.';
       await this.sendMessage(from, `✅ Comunícate con un asesor:\n${ases.title}: ${ases.link}`);
       await this.sendButtons(from, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
@@ -424,12 +423,9 @@ export class WhatsappService {
       return '';
     }
 
-    // Submenú: Trabajo / Comunidad
-    if (id.startsWith('wrk_wrk_')) {
-      id = id.replace('wrk_', '');
-    }
+    // Submenú: Trabajo / Comunidad (IDs directos wrk_proveedor / wrk_canal)
     if (id.startsWith('wrk_')) {
-      const w = TRABAJO_COMUNIDAD.find((x) => `wrk_${x.id}` === id);
+      const w = TRABAJO_COMUNIDAD.find((x) => x.id === id);
       if (!w) return 'Opción no encontrada.';
       await this.sendMessage(from, `${w.title}\n${w.text}`);
       await this.sendButtons(from, 'Opciones rápidas', [BTN_BACK, BTN_HOME]);
