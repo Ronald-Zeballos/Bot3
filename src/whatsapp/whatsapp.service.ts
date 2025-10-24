@@ -8,7 +8,9 @@ import { PdfService } from '../pdf/pdf.service';
  *  Config Ace Hardware (chat)
  *  ========================= */
 const ACE_NAME = 'Ace Hardware';
-const ACE_GREETING = '¡Hola! Bienvenido a Ace Hardware 💪\n¿En qué te podemos ayudar el día de hoy?';
+const ACE_GREETING =
+  '¡Hola! Bienvenido a Ace Hardware 💪\n¿En qué te podemos ayudar el día de hoy?';
+
 const BTN_HOME = { type: 'reply', reply: { id: 'home', title: '🏠 Menú Principal' } };
 const BTN_BACK = { type: 'reply', reply: { id: 'back', title: '🔙 Menú Anterior' } };
 
@@ -85,14 +87,15 @@ const TRABAJO_COMUNIDAD = [
 /** ==========================================
  *  ATENCIÓN: Mantengo tus dependencias y helpers
  *  ========================================== */
-
-const COMPANY_NAME = 'Russell Bedford Bolivia Encinas Auditores y Consultores SRL'; // ⚠️ Se usa en PDF existente
-const COMPANY_PHONE_E164 = '+59170400175'; // para vCard temporal (mantengo)
+const COMPANY_NAME =
+  'Russell Bedford Bolivia Encinas Auditores y Consultores SRL'; // ⚠️ Se usa en PDF existente
+const COMPANY_PHONE_E164 = '+59170400175'; // para vCard temporal (compat)
 const COMPANY_HOURS_TEXT =
   'Nuestro horario de atención es de *Lunes a Viernes* de *08:00–12:00 y 14:30–18:30*';
 const COMPANY_MAPS_URL = 'https://maps.app.goo.gl/TU82fjJzHG3RBAbTA';
 const COMPANY_LOCATION_TEXT =
-  'Nuestra ubicación es: \n 📍 Russell Bedford Bolivia – Encinas Auditores y Consultores SRL\n' + COMPANY_MAPS_URL;
+  'Nuestra ubicación es: \n 📍 Russell Bedford Bolivia – Encinas Auditores y Consultores SRL\n' +
+  COMPANY_MAPS_URL;
 
 type ClientData = {
   nombre?: string;
@@ -104,7 +107,7 @@ type ClientData = {
 };
 
 type UserState = {
-  state: string;
+  state: 'home' | 'atencion' | 'minicuotas' | 'empresas' | 'direccion' | 'trabajo';
   lastMenu?: 'home' | 'atencion' | 'minicuotas' | 'empresas' | 'direccion' | 'trabajo';
   updatedAt?: number;
 };
@@ -126,7 +129,7 @@ export class WhatsappService {
     'Content-Type': 'application/json',
   };
 
-  // Mantengo estos catálogos y formularios por compatibilidad, aunque el flujo nuevo no agenda.
+  // Mantengo estos catálogos por compatibilidad aunque el flujo de Ace no agenda.
   private readonly SERVICE_CATALOG = [
     { id: 'tributario', label: 'Asesoría Tributaria', aliases: ['impuestos', 'fiscal', 'sat', 'tributaria'] },
     { id: 'legal', label: 'Asesoría Legal', aliases: ['contrato', 'abogado', 'ley', 'juridico', 'jurídico'] },
@@ -137,11 +140,11 @@ export class WhatsappService {
 
   private userStates = new Map<string, UserState>();
 
-  // ====== Infra de envío (igual que tenías) ======
   constructor(private readonly sheets: SheetsService, private readonly pdf: PdfService) {
     setInterval(() => this.cleanOldStates(), 24 * 60 * 60 * 1000);
   }
 
+  /* ========== WhatsApp: envíos ========== */
   async sendMessage(to: string, message: string) {
     const body = { messaging_product: 'whatsapp', to, type: 'text', text: { preview_url: true, body: message } };
     const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
@@ -172,17 +175,37 @@ export class WhatsappService {
         action: { button: buttonText, sections },
       },
     };
+
+    // Helper: título de botón <= 20 chars (para fallback seguro)
+    const toBtnTitle = (s: string) => {
+      const str = String(s || '').trim();
+      if (str.length <= 20) return str || 'Opción';
+      return str.slice(0, 19) + '…'; // 19 + '…' = 20
+    };
+
     try {
       const { data } = await axios.post(this.API_URL, body, { headers: this.HEADERS });
       return data;
     } catch {
+      // Fallback a botones (máx. 3) con títulos truncados (<=20)
       const simpleButtons = sections
-        .flatMap((s) => s.rows.map((r: any) => ({ type: 'reply', reply: { id: r.id, title: r.title } })))
+        .flatMap((s) =>
+          (s.rows || []).map((r: any) => ({
+            type: 'reply',
+            reply: { id: r.id, title: toBtnTitle(r.title) },
+          }))
+        )
         .slice(0, 3);
+
+      if (!simpleButtons.length) {
+        simpleButtons.push({ type: 'reply', reply: { id: 'home', title: 'Menú' } });
+      }
+
       return this.sendButtons(to, message, simpleButtons);
     }
   }
 
+  // Enviar contacto (vCard)
   async sendContact(to: string, fullName: string, phoneE164: string) {
     const body = {
       messaging_product: 'whatsapp',
@@ -208,7 +231,9 @@ export class WhatsappService {
     form.append('messaging_product', 'whatsapp');
     form.append('file', buffer, { filename, contentType: mime });
     const url = `https://graph.facebook.com/v23.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/media`;
-    const { data } = await axios.post(url, form, { headers: { Authorization: `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`, ...form.getHeaders() } });
+    const { data } = await axios.post(url, form, {
+      headers: { Authorization: `Bearer ${process.env.WHATSAPP_CLOUD_API_TOKEN}`, ...form.getHeaders() },
+    });
     return data.id as string;
   }
 
@@ -223,6 +248,7 @@ export class WhatsappService {
     return data;
   }
 
+  /* ========== Helpers ========== */
   private cleanOldStates() {
     const now = Date.now();
     const cutoff = now - 24 * 60 * 60 * 1000;
@@ -241,11 +267,11 @@ export class WhatsappService {
       {
         title: 'Menú principal',
         rows: [
-          { id: 'm_atencion', title: '1. Atención al cliente' },
+          { id: 'm_atencion', title: '1. Atención' },
           { id: 'm_minicuotas', title: '2. Mini Cuotas' },
-          { id: 'm_empresas', title: '3. Cotización de Empresas' },
-          { id: 'm_direccion', title: '4. Dirección y horarios' },
-          { id: 'm_trabajo', title: '5. ¿Trabajar / Proveedor / Comunidad?' },
+          { id: 'm_empresas', title: '3. Empresas' },
+          { id: 'm_direccion', title: '4. Dirección/horario' },
+          { id: 'm_trabajo', title: '5. Trabajar/Comunidad' },
         ],
       },
     ];
@@ -290,7 +316,7 @@ export class WhatsappService {
   }
 
   /** =============================
-   *  Entradas de texto y botones
+   *  Lógica principal
    *  ============================= */
   async generarRespuesta(text: string, from: string, buttonId?: string): Promise<string> {
     const st = this.userStates.get(from) || { state: 'home' as const, lastMenu: 'home' as const };
@@ -299,14 +325,17 @@ export class WhatsappService {
 
     // Reacciones globales
     const t = (text || '').trim().toLowerCase();
+
+    // Frases de inicio
     if (!buttonId && /(menu|inicio|hola|buenas|hello|hi)/i.test(t)) {
       await this.sendMessage(from, ACE_GREETING);
       await this.sendAceMainMenu(from);
       this.userStates.set(from, { state: 'home', lastMenu: 'home', updatedAt: Date.now() });
       return '';
     }
+
+    // Soporte numérico 1-5 desde texto
     if (!buttonId && /^\d\b/.test(t)) {
-      // Soporta "1", "2", ..., "5"
       const num = t.match(/^\d+/)?.[0];
       if (num) {
         const map: Record<string, string> = {
@@ -322,7 +351,6 @@ export class WhatsappService {
 
     if (buttonId) return this.handleButton(from, buttonId);
 
-    // Fallback: recuerda comando
     return 'Escribe *hola* para ver el menú principal o envía un número (1-5).';
   }
 
@@ -385,7 +413,6 @@ export class WhatsappService {
 
     // Submenú: Empresas
     if (id.startsWith('emp_emp_')) {
-      // Normalización doble por IDs anidados
       id = id.replace('emp_', '');
     }
     if (id.startsWith('emp_')) {
