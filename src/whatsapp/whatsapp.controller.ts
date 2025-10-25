@@ -5,7 +5,6 @@ import { WhatsappService } from './whatsapp.service';
 export class WhatsappController {
   constructor(private readonly whatsappService: WhatsappService) {}
 
-  // Verificación del webhook (GET)
   @Get()
   verifyWebhook(
     @Query('hub.mode') mode: string,
@@ -20,7 +19,6 @@ export class WhatsappController {
     return 'Token de verificación incorrecto.';
   }
 
-  // Recepción de mensajes (POST)
   @Post()
   @HttpCode(HttpStatus.OK)
   async handleWebhook(@Body() body: any) {
@@ -42,9 +40,7 @@ export class WhatsappController {
               const userText = message.text?.body || '';
               console.log(`💬 Texto de ${from}: ${userText}`);
               const response = await this.whatsappService.generarRespuesta(userText, from);
-              if (response && response.trim() !== '') {
-                await this.whatsappService.sendMessage(from, response);
-              }
+              if (response && response.trim() !== '') await this.whatsappService.sendMessage(from, response);
               continue;
             }
 
@@ -54,32 +50,36 @@ export class WhatsappController {
 
               if (itype === 'button_reply') {
                 const buttonId = message.interactive?.button_reply?.id;
-                const buttonTitle = message.interactive?.button_reply?.title; // opcional
+                const buttonTitle = message.interactive?.button_reply?.title;
                 console.log(`🖲️ Button reply de ${from}: id=${buttonId} title=${buttonTitle}`);
-
                 const response = await this.whatsappService.generarRespuesta('', from, buttonId);
-                if (response && response.trim() !== '') {
-                  await this.whatsappService.sendMessage(from, response);
-                }
+                if (response && response.trim() !== '') await this.whatsappService.sendMessage(from, response);
                 continue;
               }
 
               if (itype === 'list_reply') {
                 const listId = message.interactive?.list_reply?.id;
-                const listTitle = message.interactive?.list_reply?.title; // opcional
+                const listTitle = message.interactive?.list_reply?.title;
                 console.log(`📋 List reply de ${from}: id=${listId} title=${listTitle}`);
-
                 const response = await this.whatsappService.generarRespuesta('', from, listId);
-                if (response && response.trim() !== '') {
-                  await this.whatsappService.sendMessage(from, response);
-                }
+                if (response && response.trim() !== '') await this.whatsappService.sendMessage(from, response);
                 continue;
               }
             }
 
-            // 3) Otros tipos (audio, imagen, etc.)
+            // 3) Audio / Voice
+            if (message.type === 'audio' || message.type === 'voice') {
+              const mediaId = message?.audio?.id || message?.voice?.id;
+              if (!mediaId) continue;
+              console.log(`🎤 Audio de ${from}: mediaId=${mediaId}`);
+              const response = await this.whatsappService.handleIncomingAudio(from, mediaId);
+              if (response && response.trim() !== '') await this.whatsappService.sendMessage(from, response);
+              continue;
+            }
+
+            // 4) Otros tipos (imagen, docs, etc.)
             console.log(`ℹ️ Tipo no manejado: ${message.type}`);
-            const fallback = 'Puedo ayudarte a *agendar una cita*. Escribe "hola" para comenzar.';
+            const fallback = 'Puedo ayudarte con nuestro *menú principal*. Escribe "hola" para comenzar.';
             await this.whatsappService.sendMessage(from, fallback);
           }
         }

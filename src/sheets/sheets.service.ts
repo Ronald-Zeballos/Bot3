@@ -3,6 +3,12 @@ import { google } from 'googleapis';
 
 export type SlotOffered = { row: number; date: string; time: string; label: string; fallback?: boolean };
 
+type ClientRow = {
+  telefono: string; // solo dígitos (sin +591)
+  nombre: string;
+  email: string;
+};
+
 @Injectable()
 export class SheetsService {
   private sheets: any;
@@ -10,6 +16,12 @@ export class SheetsService {
 
   private readonly TAB_SLOTS = process.env.SHEETS_TAB_SLOTS || 'Horarios';
   private readonly TAB_APPTS = process.env.SHEETS_TAB_APPOINTMENTS || 'Citas';
+
+  // NUEVO: padrón de clientes
+  private readonly TAB_CLIENTS = process.env.SHEETS_TAB_CLIENTS || 'Clientes';
+  // Estructura esperada de Clientes:
+  // A: telefono (solo dígitos sin +591), B: nombre, C: email, D: created_iso, E: updated_iso
+
   private readonly LOCAL_TZ = process.env.LOCAL_TZ || 'America/La_Paz';
   private readonly RETRY_ATTEMPTS = 3;
   private readonly RETRY_DELAY_MS = 600;
@@ -48,9 +60,69 @@ export class SheetsService {
     this.sheets = google.sheets({ version: 'v4', auth });
   }
 
-  /* =============== Público (lectura/escritura) =============== */
+  /* =============== CLIENTES =============== */
+  async findClientByPhone(phoneDigits: string): Promise<ClientRow | null> {
+    const r: any = await this.sheetsRequest(() =>
+      this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.SPREADSHEET_ID,
+        range: `${this.TAB_CLIENTS}!A2:C`,
+      })
+    );
+    const rows: string[][] = r.data.values || [];
+    for (const row of rows) {
+      const tel = (row[0] || '').replace(/[^\d]/g, '');
+      if (tel && tel === phoneDigits) {
+        return { telefono: tel, nombre: (row[1] || '').trim(), email: (row[2] || '').trim() };
+      }
+    }
+    return null;
+  }
 
-  /** Horas disponibles de una fecha específica (sólo filas con estado DISPONIBLE) */
+  async upsertClientBasic(phoneDigits: string, nombre?: string, email?: string): Promise<void> {
+    const read: any = await this.sheetsRequest(() =>
+      this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.SPREADSHEET_ID,
+        range: `${this.TAB_CLIENTS}!A2:E`,
+      })
+    );
+    const rows: string[][] = read.data.values || [];
+    let targetRow = -1;
+
+    for (let i = 0; i < rows.length; i++) {
+      const tel = (rows[i][0] || '').replace(/[^\d]/g, '');
+      if (tel === phoneDigits) { targetRow = i + 2; break; } // +2 por cabecera
+    }
+
+    const nowIso = new Date().toISOString();
+
+    if (targetRow === -1) {
+      const values = [[phoneDigits, nombre || '', email || '', nowIso, nowIso]];
+      await this.sheetsRequest(() =>
+        this.sheets.spreadsheets.values.append({
+          spreadsheetId: this.SPREADSHEET_ID,
+          range: `${this.TAB_CLIENTS}!A1:E`,
+          valueInputOption: 'RAW',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: { values },
+        })
+      );
+    } else {
+      const current = rows[targetRow - 2] || [];
+      const newNombre = (nombre ?? current[1] ?? '').trim();
+      const newEmail = (email ?? current[2] ?? '').trim();
+      const values = [[phoneDigits, newNombre, newEmail, current[3] || '', nowIso]];
+      await this.sheetsRequest(() =>
+        this.sheets.spreadsheets.values.update({
+          spreadsheetId: this.SPREADSHEET_ID,
+          range: `${this.TAB_CLIENTS}!A${targetRow}:E${targetRow}`,
+          valueInputOption: 'RAW',
+          requestBody: { values },
+        })
+      );
+    }
+  }
+
+  /* =============== TURNOS / CITAS (tus originales) =============== */
   async getSlotsForDate(dateYMD: string): Promise<SlotOffered[]> {
     const r: any = await this.sheetsRequest(() =>
       this.sheets.spreadsheets.values.get({ spreadsheetId: this.SPREADSHEET_ID, range: `${this.TAB_SLOTS}!A2:G` })
@@ -68,12 +140,10 @@ export class SheetsService {
         out.push({ row: rowIdx, date: fecha, time: hora, label: `${fecha} • ${hora}` });
       }
     }
-    // ordena por hora asc
     out.sort((a, b) => a.time.localeCompare(b.time));
     return out;
   }
 
-  /** Reservar fila: escribe servicio, estado RESERVADO, reservado_por, Fecha(timestamp ISO) */
   async reserveSlotRow(rowNumber: number, byPhone: string, serviceType: string): Promise<boolean> {
     if (rowNumber <= 0) return false;
     const readRange = `${this.TAB_SLOTS}!A${rowNumber}:G${rowNumber}`;
@@ -85,7 +155,6 @@ export class SheetsService {
 
     if (estadoActual && estadoActual !== 'DISPONIBLE') return false;
 
-    // Actualiza C..G → servicio, estado, notas, reservado_por, Fecha
     const writeRange = `${this.TAB_SLOTS}!C${rowNumber}:G${rowNumber}`;
     await this.sheetsRequest(() =>
       this.sheets.spreadsheets.values.update({
@@ -98,7 +167,6 @@ export class SheetsService {
     return true;
   }
 
-  /** Inserta cita en la pestaña Citas */
   async appendAppointmentRow(opts: {
     telefono: string; nombre: string; email: string; servicio: string;
     fecha: string; hora: string; slotRow: number | string;
@@ -127,7 +195,6 @@ export class SheetsService {
     );
   }
 
-  /** Próximos N días hábiles (sin domingos ni feriados de Santa Cruz/BO) */
   async getNextWorkingDays(n: number): Promise<string[]> {
     const out: string[] = [];
     const { y, m, day } = this.todayYMD();
@@ -141,18 +208,16 @@ export class SheetsService {
     return out;
   }
 
-  /* =============== Si está vacío, siembra 1 mes ================= */
   private async seedMonthSlotsIfEmpty() {
     const r: any = await this.sheetsRequest(() =>
       this.sheets.spreadsheets.values.get({ spreadsheetId: this.SPREADSHEET_ID, range: `${this.TAB_SLOTS}!A2:A` })
     );
     const existing = (r.data.values || []).length;
-    if (existing > 0) return; // ya tiene datos
+    if (existing > 0) return;
 
     await this.seedMonthSlots();
   }
 
-  /** Genera 1 mes de horarios (30 días), 09:00–12:30 y 14:00–17:00 cada 30min, sin domingos ni feriados SCZ/BO */
   async seedMonthSlots() {
     const morning = { start: '09:00', end: '12:30' };
     const afternoon = { start: '14:00', end: '17:00' };
@@ -169,7 +234,6 @@ export class SheetsService {
           ...this.generateTimes(morning.start, morning.end, STEP_MIN),
           ...this.generateTimes(afternoon.start, afternoon.end, STEP_MIN),
         ]) {
-          // A:fecha, B:hora, C:servicio(vacío), D:estado, E:notas, F:reservado_por, G:Fecha
           toAppend.push([ymd, slot, '', 'DISPONIBLE', '', '', '']);
         }
       }
@@ -237,33 +301,20 @@ export class SheetsService {
   }
 
   private isHolidayOrSunday(d: Date): boolean {
-    // domingo en zona local
     const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: this.LOCAL_TZ }).format(d);
     if (weekday.toLowerCase().startsWith('sun')) return true;
 
     const ymd = this.ymdLocal(d);
     const [y] = ymd.split('-').map(Number);
-    const easter = this.easterYMD(y); // Domingo de Pascua
+    const easter = this.easterYMD(y);
     const days = new Set<string>([
-      // Nacionales fijos
-      `${y}-01-01`, // Año Nuevo
-      `${y}-05-01`, // Día del Trabajo
-      `${y}-06-21`, // Año Nuevo Andino Amazónico
-      `${y}-08-06`, // Independencia
-      `${y}-11-02`, // Todos los Difuntos
-      `${y}-12-25`, // Navidad
-      // Santa Cruz (departamental)
+      `${y}-01-01`, `${y}-05-01`, `${y}-06-21`, `${y}-08-06`, `${y}-11-02`, `${y}-12-25`,
       `${y}-09-24`,
-      // Móviles (aprox. estándar BO)
-      this.shiftDays(easter, -48), // Lunes Carnaval
-      this.shiftDays(easter, -47), // Martes Carnaval
-      this.shiftDays(easter, -2),  // Viernes Santo
-      this.shiftDays(easter, +60), // Corpus Christi
+      this.shiftDays(easter, -48), this.shiftDays(easter, -47), this.shiftDays(easter, -2), this.shiftDays(easter, +60),
     ]);
     return days.has(ymd);
   }
 
-  /** Algoritmo de Meeus para fecha de Pascua (gregoriano). Devuelve YYYY-MM-DD */
   private easterYMD(y: number): string {
     const a = y % 19;
     const b = Math.floor(y / 100);
@@ -277,12 +328,11 @@ export class SheetsService {
     const k = c % 4;
     const l = (32 + 2 * e + 2 * i - h - k) % 7;
     const m = Math.floor((a + 11 * h + 22 * l) / 451);
-    const month = Math.floor((h + l - 7 * m + 114) / 31); // 3=Mar, 4=Abr
+    const month = Math.floor((h + l - 7 * m + 114) / 31);
     const day = ((h + l - 7 * m + 114) % 31) + 1;
     return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
 
-  /** ymd +/- n días */
   private shiftDays(ymd: string, n: number): string {
     const [y, m, d] = ymd.split('-').map(Number);
     const dt = new Date(Date.UTC(y, m - 1, d));
